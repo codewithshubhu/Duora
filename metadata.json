@@ -1,0 +1,6 @@
+{
+  "name": "Duora - Connect Privately",
+  "description": "Duora is a premium, secure messaging application with real-time chat, WebRTC voice and video calls, private message requests, and 12 custom themes.",
+  "requestFramePermissions": ["camera", "microphone", "clipboard-write"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

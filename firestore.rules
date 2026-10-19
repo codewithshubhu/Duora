@@ -1,0 +1,114 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Default deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Public User Profiles
+    match /users/{userId} {
+      allow get: if isSignedIn();
+      allow list: if isSignedIn();
+      allow create: if isOwner(userId) && incoming().uid == request.auth.uid;
+      allow update: if isOwner(userId) && incoming().uid == request.auth.uid && (!('duoraId' in existing()) || incoming().duoraId == existing().duoraId);
+      allow delete: if false;
+
+      // Private user information: PII isolation
+      match /private/info {
+        allow get, update, delete: if isOwner(userId);
+        allow list: if false;
+        allow create: if isOwner(userId);
+      }
+    }
+
+    // Username reservation registry
+    match /usernames/{usernameLower} {
+      allow get: if isSignedIn();
+      allow list: if false;
+      allow create: if isSignedIn() && incoming().uid == request.auth.uid;
+      allow update: if false;
+      allow delete: if isSignedIn() && existing().uid == request.auth.uid;
+    }
+
+    // Permanent Duora ID registry
+    match /duoraIds/{duoraId} {
+      allow get: if isSignedIn();
+      allow list: if false;
+      allow create: if isSignedIn() && incoming().uid == request.auth.uid;
+      allow update, delete: if false;
+    }
+
+    // Conversations
+    match /conversations/{convId} {
+      allow get: if isSignedIn() && (resource == null || request.auth.uid in resource.data.participantIds);
+      allow list: if isSignedIn() && (request.auth.uid in resource.data.participantIds);
+      allow create: if isSignedIn() && (request.auth.uid in incoming().participantIds);
+      allow update: if isSignedIn() && (request.auth.uid in resource.data.participantIds);
+      allow delete: if false;
+
+      // Subcollection: Messages
+      match /messages/{messageId} {
+        allow get: if isSignedIn() && (resource == null || request.auth.uid in get(/databases/$(database)/documents/conversations/$(convId)).data.participantIds);
+        allow list: if isSignedIn() && (request.auth.uid in get(/databases/$(database)/documents/conversations/$(convId)).data.participantIds);
+        allow create: if isSignedIn() && incoming().senderId == request.auth.uid && (request.auth.uid in get(/databases/$(database)/documents/conversations/$(convId)).data.participantIds);
+        allow update: if isSignedIn() && (request.auth.uid in get(/databases/$(database)/documents/conversations/$(convId)).data.participantIds);
+        allow delete: if isSignedIn() && (existing().senderId == request.auth.uid);
+      }
+
+      // Subcollection: Typing
+      match /typing/{userId} {
+        allow read: if isSignedIn() && (resource == null || request.auth.uid in get(/databases/$(database)/documents/conversations/$(convId)).data.participantIds);
+        allow write: if isOwner(userId);
+      }
+    }
+
+    // Message Requests
+    match /messageRequests/{requestId} {
+      allow get: if isSignedIn() && (resource == null || resource.data.senderId == request.auth.uid || resource.data.receiverId == request.auth.uid);
+      allow list: if isSignedIn() && (resource.data.receiverId == request.auth.uid || resource.data.senderId == request.auth.uid);
+      allow create: if isSignedIn() && incoming().senderId == request.auth.uid;
+      allow update: if isSignedIn() && (resource.data.receiverId == request.auth.uid || resource.data.senderId == request.auth.uid);
+      allow delete: if isSignedIn() && (resource.data.receiverId == request.auth.uid || resource.data.senderId == request.auth.uid);
+    }
+
+    // WebRTC Calls
+    match /calls/{callId} {
+      allow get, list: if isSignedIn() && (resource == null || resource.data.callerId == request.auth.uid || resource.data.receiverId == request.auth.uid);
+      allow create: if isSignedIn() && incoming().callerId == request.auth.uid;
+      allow update: if isSignedIn() && (resource.data.callerId == request.auth.uid || resource.data.receiverId == request.auth.uid);
+      allow delete: if isSignedIn() && (resource.data.callerId == request.auth.uid || resource.data.receiverId == request.auth.uid);
+
+      match /callerCandidates/{candId} {
+        allow read, write: if isSignedIn();
+      }
+      match /receiverCandidates/{candId} {
+        allow read, write: if isSignedIn();
+      }
+    }
+
+    // Notifications
+    match /notifications/{notificationId} {
+      allow get, list: if isSignedIn() && (resource == null || resource.data.recipientId == request.auth.uid);
+      allow create: if isSignedIn();
+      allow update, delete: if isSignedIn() && resource.data.recipientId == request.auth.uid;
+    }
+  }
+}

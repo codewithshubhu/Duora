@@ -1,0 +1,245 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Public user profile and identity configuration",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "maxLength": 128 },
+        "duoraId": { "type": "string", "pattern": "^DUR-[A-Z0-9]{4}-[A-Z0-9]{4}$", "maxLength": 24 },
+        "username": { "type": "string", "pattern": "^[a-zA-Z0-9_]{3,30}$", "maxLength": 30 },
+        "usernameLower": { "type": "string", "pattern": "^[a-z0-9_]{3,30}$", "maxLength": 30 },
+        "displayName": { "type": "string", "maxLength": 60 },
+        "avatarUrl": { "type": "string", "maxLength": 2048 },
+        "bio": { "type": "string", "maxLength": 200 },
+        "isDiscoverable": { "type": "boolean" },
+        "showOnlineStatus": { "type": "boolean" },
+        "showLastSeen": { "type": "boolean" },
+        "readReceipts": { "type": "boolean" },
+        "isOnline": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "lastSeenAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "duoraId", "username", "usernameLower", "displayName", "isDiscoverable"]
+    },
+    "UserPrivateInfo": {
+      "title": "UserPrivateInfo",
+      "description": "Private sensitive user settings, email, and blocklist",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string", "maxLength": 256 },
+        "emailVerified": { "type": "boolean" },
+        "fcmToken": { "type": "string", "maxLength": 512 },
+        "blockedUserIds": { "type": "array" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["email", "emailVerified"]
+    },
+    "UsernameClaim": {
+      "title": "UsernameClaim",
+      "description": "Unique username claim to prevent duplicates",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "maxLength": 128 },
+        "username": { "type": "string", "maxLength": 30 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "username"]
+    },
+    "DuoraIdClaim": {
+      "title": "DuoraIdClaim",
+      "description": "Unique permanent Duora ID claim registry",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "maxLength": 128 },
+        "duoraId": { "type": "string", "maxLength": 24 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "duoraId"]
+    },
+    "Conversation": {
+      "title": "Conversation",
+      "description": "One-to-one or group messaging conversation thread",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "type": { "type": "string", "enum": ["direct", "group"] },
+        "participantIds": { "type": "array" },
+        "participants": { "type": "object" },
+        "lastMessage": { "type": "string", "maxLength": 500 },
+        "lastMessageSenderId": { "type": "string", "maxLength": 128 },
+        "lastMessageTimestamp": { "type": "string", "format": "date-time" },
+        "unreadCount": { "type": "object" },
+        "isAccepted": { "type": "boolean" },
+        "groupName": { "type": "string", "maxLength": 80 },
+        "groupAvatar": { "type": "string", "maxLength": 2048 },
+        "groupAdminIds": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "type", "participantIds", "createdAt", "updatedAt"]
+    },
+    "Message": {
+      "title": "Message",
+      "description": "Chat message item with text, media, reactions, and reply references",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "conversationId": { "type": "string", "maxLength": 128 },
+        "senderId": { "type": "string", "maxLength": 128 },
+        "senderName": { "type": "string", "maxLength": 60 },
+        "senderAvatar": { "type": "string", "maxLength": 2048 },
+        "content": { "type": "string", "maxLength": 4000 },
+        "type": { "type": "string", "enum": ["text", "image", "audio", "file"] },
+        "mediaUrl": { "type": "string", "maxLength": 1000000 },
+        "mediaName": { "type": "string", "maxLength": 128 },
+        "mediaSize": { "type": "number" },
+        "audioDuration": { "type": "number" },
+        "replyTo": { "type": "object" },
+        "reactions": { "type": "object" },
+        "isEdited": { "type": "boolean" },
+        "isDeleted": { "type": "boolean" },
+        "readBy": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "conversationId", "senderId", "senderName", "type", "createdAt"]
+    },
+    "TypingIndicator": {
+      "title": "TypingIndicator",
+      "description": "Active typing indicator state for a user in a conversation",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "maxLength": 128 },
+        "isTyping": { "type": "boolean" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "isTyping", "updatedAt"]
+    },
+    "MessageRequest": {
+      "title": "MessageRequest",
+      "description": "Pending invitation or message request between two users",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "senderId": { "type": "string", "maxLength": 128 },
+        "receiverId": { "type": "string", "maxLength": 128 },
+        "senderDuoraId": { "type": "string", "maxLength": 24 },
+        "senderUsername": { "type": "string", "maxLength": 30 },
+        "senderDisplayName": { "type": "string", "maxLength": 60 },
+        "senderAvatar": { "type": "string", "maxLength": 2048 },
+        "receiverDuoraId": { "type": "string", "maxLength": 24 },
+        "previewMessage": { "type": "string", "maxLength": 500 },
+        "status": { "type": "string", "enum": ["pending", "accepted", "declined"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "senderId", "receiverId", "senderDuoraId", "receiverDuoraId", "status", "createdAt"]
+    },
+    "CallRecord": {
+      "title": "CallRecord",
+      "description": "WebRTC voice or video call signaling and call history item",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "callerId": { "type": "string", "maxLength": 128 },
+        "callerName": { "type": "string", "maxLength": 60 },
+        "callerAvatar": { "type": "string", "maxLength": 2048 },
+        "callerDuoraId": { "type": "string", "maxLength": 24 },
+        "receiverId": { "type": "string", "maxLength": 128 },
+        "receiverName": { "type": "string", "maxLength": 60 },
+        "receiverAvatar": { "type": "string", "maxLength": 2048 },
+        "receiverDuoraId": { "type": "string", "maxLength": 24 },
+        "type": { "type": "string", "enum": ["audio", "video"] },
+        "status": { "type": "string", "enum": ["ringing", "accepted", "rejected", "ended", "missed"] },
+        "duration": { "type": "number" },
+        "offer": { "type": "object" },
+        "answer": { "type": "object" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "endedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "callerId", "callerName", "receiverId", "receiverName", "type", "status", "createdAt"]
+    },
+    "IceCandidate": {
+      "title": "IceCandidate",
+      "description": "WebRTC ICE candidate payload for peer-to-peer signaling",
+      "type": "object",
+      "properties": {
+        "candidate": { "type": "string", "maxLength": 4096 },
+        "sdpMid": { "type": "string", "maxLength": 128 },
+        "sdpMLineIndex": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["candidate"]
+    },
+    "NotificationItem": {
+      "title": "NotificationItem",
+      "description": "User notification event for message requests, missed calls, or system alerts",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "recipientId": { "type": "string", "maxLength": 128 },
+        "senderId": { "type": "string", "maxLength": 128 },
+        "senderName": { "type": "string", "maxLength": 60 },
+        "senderAvatar": { "type": "string", "maxLength": 2048 },
+        "type": { "type": "string", "enum": ["message_request", "request_accepted", "call_missed", "alert"] },
+        "title": { "type": "string", "maxLength": 100 },
+        "body": { "type": "string", "maxLength": 300 },
+        "read": { "type": "boolean" },
+        "link": { "type": "string", "maxLength": 256 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "recipientId", "type", "title", "body", "read", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "Public user profile and identity configuration"
+    },
+    "/users/{userId}/private/info": {
+      "schema": "UserPrivateInfo",
+      "description": "Private user credentials, verification status, and blocklist"
+    },
+    "/usernames/{usernameLower}": {
+      "schema": "UsernameClaim",
+      "description": "Unique username claim document ensuring atomic username reservation"
+    },
+    "/duoraIds/{duoraId}": {
+      "schema": "DuoraIdClaim",
+      "description": "Permanent immutable Duora ID registry"
+    },
+    "/conversations/{convId}": {
+      "schema": "Conversation",
+      "description": "Conversation threads between members"
+    },
+    "/conversations/{convId}/messages/{messageId}": {
+      "schema": "Message",
+      "description": "Messages inside a conversation"
+    },
+    "/conversations/{convId}/typing/{userId}": {
+      "schema": "TypingIndicator",
+      "description": "Typing state for a user in a conversation"
+    },
+    "/messageRequests/{requestId}": {
+      "schema": "MessageRequest",
+      "description": "Pending message requests between users"
+    },
+    "/calls/{callId}": {
+      "schema": "CallRecord",
+      "description": "WebRTC voice/video call session and signaling state"
+    },
+    "/calls/{callId}/callerCandidates/{candidateId}": {
+      "schema": "IceCandidate",
+      "description": "Caller ICE candidate for WebRTC signaling"
+    },
+    "/calls/{callId}/receiverCandidates/{candidateId}": {
+      "schema": "IceCandidate",
+      "description": "Receiver ICE candidate for WebRTC signaling"
+    },
+    "/notifications/{notificationId}": {
+      "schema": "NotificationItem",
+      "description": "User notification alerts and notifications"
+    }
+  }
+}

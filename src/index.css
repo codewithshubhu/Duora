@@ -1,0 +1,50 @@
+@import "tailwindcss";
+
+:root {
+  --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+}
+
+body {
+  font-family: var(--font-sans);
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+  background-color: var(--color-bg, #F7F7FB);
+  color: var(--color-text, #191824);
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+/* Duora Theme Global Utilities */
+.duora-bg { background-color: var(--color-bg) !important; }
+.duora-surface { background-color: var(--color-surface) !important; }
+.duora-surface-hover:hover { background-color: var(--color-surface-hover) !important; }
+.duora-card { background-color: var(--color-card) !important; }
+.duora-border { border-color: var(--color-border) !important; }
+.duora-text { color: var(--color-text) !important; }
+.duora-text-muted { color: var(--color-text-muted) !important; }
+.duora-primary { background-color: var(--color-primary) !important; }
+.duora-primary-text { color: var(--color-primary) !important; }
+.duora-lilac { background-color: var(--color-lilac) !important; }
+
+/* Custom scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(142, 120, 255, 0.25);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(112, 87, 232, 0.45);
+}
+
+.pb-safe {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
