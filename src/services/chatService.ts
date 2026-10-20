@@ -70,10 +70,22 @@ export function subscribeToMessages(
   return onSnapshot(
     q,
     (snap) => {
+      const seen = new Set<string>();
       const msgs: Message[] = [];
       snap.forEach((d) => {
-        msgs.push({ ...d.data(), id: d.id } as Message);
+        if (!seen.has(d.id)) {
+          seen.add(d.id);
+          msgs.push({ ...d.data(), id: d.id } as Message);
+        }
       });
+
+      // Explicitly sort ascending (oldest first, newest at the bottom)
+      msgs.sort((a, b) => {
+        const timeA = a.createdAt?.toMillis ? a.createdAt.toMillis() : (a.createdAt?.seconds ? a.createdAt.seconds * 1000 : 0);
+        const timeB = b.createdAt?.toMillis ? b.createdAt.toMillis() : (b.createdAt?.seconds ? b.createdAt.seconds * 1000 : 0);
+        return timeA - timeB;
+      });
+
       onUpdate(msgs);
     },
     (err) => {

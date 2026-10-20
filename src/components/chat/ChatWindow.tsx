@@ -38,6 +38,7 @@ import {
   deleteMessage,
   markConversationAsRead
 } from '../../services/chatService';
+import { getUserProfile } from '../../services/userService';
 import { sound } from '../../utils/sound';
 import { VoiceRecorder } from './VoiceRecorder';
 
@@ -73,8 +74,11 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
   const [playingAudioId, setPlayingAudioId] = useState<string | null>(null);
   const [confirmUnsendMessageId, setConfirmUnsendMessageId] = useState<string | null>(null);
   const [confirmDeleteMessageId, setConfirmDeleteMessageId] = useState<string | null>(null);
+  const [liveOtherUser, setLiveOtherUser] = useState<UserProfile | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const isNearBottomRef = useRef(true);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const audioElementsRef = useRef<Record<string, HTMLAudioElement>>({});
   const typingTimeoutRef = useRef<number | null>(null);
@@ -83,6 +87,22 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
   const otherParticipant = Object.values(conversation.participants || {}).find(
     p => p.uid !== profile?.uid
   );
+
+  // Synchronize live profile info for the other participant
+  useEffect(() => {
+    if (otherParticipant?.uid) {
+      getUserProfile(otherParticipant.uid)
+        .then(u => {
+          if (u) setLiveOtherUser(u);
+        })
+        .catch(console.error);
+    }
+  }, [otherParticipant?.uid]);
+
+  const activeOtherDisplayName = liveOtherUser?.displayName || otherParticipant?.displayName || 'Duora Member';
+  const activeOtherUsername = liveOtherUser?.username || otherParticipant?.username || 'user';
+  const activeOtherDuoraId = liveOtherUser?.duoraId || otherParticipant?.duoraId || '';
+  const activeOtherAvatar = liveOtherUser?.avatarUrl || otherParticipant?.avatarUrl || 'https://api.dicebear.com/7.x/identicon/svg?seed=user';
 
   // Mark conversation as read on mount and update
   useEffect(() => {
@@ -114,10 +134,20 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     return () => unsub();
   }, [conversation?.id, profile]);
 
-  // Scroll to bottom on new messages
+  // Track if user is scrolled near bottom
+  const handleScroll = () => {
+    if (!scrollContainerRef.current) return;
+    const { scrollTop, scrollHeight, clientHeight } = scrollContainerRef.current;
+    // Within 120px is considered near bottom
+    isNearBottomRef.current = scrollHeight - scrollTop - clientHeight < 120;
+  };
+
+  // Scroll to bottom ONLY if already near bottom (preserves reading position when scrolling up)
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages.length]);
+    if (isNearBottomRef.current) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [messages]);
 
   // Typing debounce
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -154,6 +184,12 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     setReplyingTo(null);
     sound.playMessageSent();
     setTypingState(conversation.id, profile.uid, false);
+
+    // Scroll to bottom immediately on user send
+    isNearBottomRef.current = true;
+    setTimeout(() => {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }, 50);
 
     try {
       await sendMessage(conversation.id, profile, text, 'text', { replyTo: reply });
@@ -318,7 +354,9 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
 
           <div
             onClick={() => {
-              if (otherParticipant) {
+              if (liveOtherUser) {
+                onOpenProfile(liveOtherUser);
+              } else if (otherParticipant) {
                 onOpenProfile({
                   uid: otherParticipant.uid,
                   duoraId: otherParticipant.duoraId,
@@ -326,6 +364,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
                   usernameLower: otherParticipant.username.toLowerCase(),
                   displayName: otherParticipant.displayName,
                   avatarUrl: otherParticipant.avatarUrl,
+                  bio: otherParticipant.bio || '',
                   isDiscoverable: true,
                   showOnlineStatus: true,
                   showLastSeen: true,
@@ -340,7 +379,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
                 src={
                   conversation.type === 'group'
                     ? (conversation.groupAvatar || 'https://api.dicebear.com/7.x/identicon/svg?seed=group')
-                    : (otherParticipant?.avatarUrl || 'https://api.dicebear.com/7.x/identicon/svg?seed=user')
+                    : activeOtherAvatar
                 }
                 alt="Avatar"
                 className="w-10 h-10 rounded-full object-cover border shadow-xs"
@@ -353,16 +392,16 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
 
             <div className="flex flex-col min-w-0">
               <span className="font-bold text-sm truncate" style={{ color: theme.colors.text }}>
-                {conversation.type === 'group' ? conversation.groupName : otherParticipant?.displayName}
+                {conversation.type === 'group' ? conversation.groupName : activeOtherDisplayName}
               </span>
               <div className="flex items-center gap-1.5 text-xs" style={{ color: theme.colors.textMuted }}>
                 {conversation.type === 'direct' ? (
                   <>
                     <span className="font-mono text-[11px] font-bold" style={{ color: theme.colors.primary }}>
-                      {otherParticipant?.duoraId}
+                      {activeOtherDuoraId}
                     </span>
                     <span>•</span>
-                    <span className="truncate">@{otherParticipant?.username}</span>
+                    <span className="truncate">@{activeOtherUsername}</span>
                   </>
                 ) : (
                   <span>{conversation.participantIds.length} members</span>
@@ -379,18 +418,20 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
               <button
                 type="button"
                 onClick={() => {
-                  initiateCall({
+                  const targetUser: UserProfile = liveOtherUser || {
                     uid: otherParticipant.uid,
                     duoraId: otherParticipant.duoraId,
                     username: otherParticipant.username,
                     usernameLower: otherParticipant.username.toLowerCase(),
                     displayName: otherParticipant.displayName,
                     avatarUrl: otherParticipant.avatarUrl,
+                    bio: otherParticipant.bio || '',
                     isDiscoverable: true,
                     showOnlineStatus: true,
                     showLastSeen: true,
                     readReceipts: true,
-                  }, 'audio');
+                  };
+                  initiateCall(targetUser, 'audio');
                 }}
                 className="p-2.5 rounded-xl hover:opacity-80 transition cursor-pointer"
                 style={{ color: theme.colors.primary }}
@@ -402,18 +443,20 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
               <button
                 type="button"
                 onClick={() => {
-                  initiateCall({
+                  const targetUser: UserProfile = liveOtherUser || {
                     uid: otherParticipant.uid,
                     duoraId: otherParticipant.duoraId,
                     username: otherParticipant.username,
                     usernameLower: otherParticipant.username.toLowerCase(),
                     displayName: otherParticipant.displayName,
                     avatarUrl: otherParticipant.avatarUrl,
+                    bio: otherParticipant.bio || '',
                     isDiscoverable: true,
                     showOnlineStatus: true,
                     showLastSeen: true,
                     readReceipts: true,
-                  }, 'video');
+                  };
+                  initiateCall(targetUser, 'video');
                 }}
                 className="p-2.5 rounded-xl hover:opacity-80 transition cursor-pointer"
                 style={{ color: theme.colors.primary }}
@@ -469,6 +512,8 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
 
       {/* Message Stream */}
       <div
+        ref={scrollContainerRef}
+        onScroll={handleScroll}
         className="flex-1 overflow-y-auto p-4 space-y-4"
         style={getWallpaperStyle()}
       >
@@ -1017,7 +1062,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
       {/* Voice Recording Active Bar */}
       {isRecordingVoice ? (
         <VoiceRecorder
-          onSendVoice={handleVoiceSend}
+          onSend={handleVoiceSend}
           onCancel={() => setIsRecordingVoice(false)}
         />
       ) : (

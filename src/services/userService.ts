@@ -196,8 +196,9 @@ export async function updateUserProfile(
       }));
     }
 
-    // Synchronize avatar and display name across existing conversations so all other users see it immediately!
-    if (updates.avatarUrl || updates.displayName) {
+    // Synchronize avatar, display name, username, and bio across existing conversations so all other users see it immediately!
+    const effectiveUsername = newUsername;
+    if (updates.avatarUrl || updates.displayName || effectiveUsername || updates.bio !== undefined) {
       try {
         const qConvs = query(
           collection(db, 'conversations'),
@@ -214,11 +215,17 @@ export async function updateUserProfile(
           if (updates.displayName) {
             updateData[`participants.${uid}.displayName`] = updates.displayName;
           }
+          if (effectiveUsername) {
+            updateData[`participants.${uid}.username`] = effectiveUsername;
+          }
+          if (updates.bio !== undefined) {
+            updateData[`participants.${uid}.bio`] = updates.bio;
+          }
           convBatch.update(cDoc.ref, updateData);
         });
         await convBatch.commit();
       } catch (syncErr) {
-        console.warn('Could not sync avatar across conversations:', syncErr);
+        console.warn('Could not sync profile across conversations:', syncErr);
       }
     }
   } catch (error) {
@@ -286,7 +293,7 @@ export async function searchUsers(searchTerm: string, currentUserId: string): Pr
 }
 
 // Block / Unblock user
-export async function toggleBlockUser(currentUserId: string, targetUserId: string, block: boolean): Promise<void> {
+export async function toggleBlockUser(currentUserId: string, targetUserId: string, block: boolean = true): Promise<void> {
   try {
     const privateRef = doc(db, 'users', currentUserId, 'private', 'info');
     const snap = await getDoc(privateRef);

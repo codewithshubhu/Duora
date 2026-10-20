@@ -1,8 +1,8 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { useTheme } from '../../context/ThemeContext';
 import { UserProfile } from '../../types';
-import { updateUserProfile, toggleBlockUser } from '../../services/userService';
+import { updateUserProfile, toggleBlockUser, getUserProfile } from '../../services/userService';
 import { uploadProfilePhoto } from '../../services/storageService';
 import {
   X,
@@ -19,7 +19,9 @@ import {
   Sparkles,
   AlertCircle,
   Smartphone,
-  MessageSquare
+  MessageSquare,
+  Loader2,
+  LogOut
 } from 'lucide-react';
 
 interface ProfileModalProps {
@@ -35,10 +37,23 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
   onClose,
   onStartChat
 }) => {
-  const { profile, refreshProfile } = useAuth();
+  const { profile, refreshProfile, signOut } = useAuth();
   const { theme } = useTheme();
 
   const [isEditing, setIsEditing] = useState(false);
+  const [loggingOut, setLoggingOut] = useState(false);
+
+  const handleModalLogout = async () => {
+    setLoggingOut(true);
+    try {
+      onClose();
+      await signOut();
+    } catch (e) {
+      console.error('Logout error:', e);
+    } finally {
+      setLoggingOut(false);
+    }
+  };
   const [displayName, setDisplayName] = useState(user.displayName);
   const [username, setUsername] = useState(user.username);
   const [bio, setBio] = useState(user.bio || '');
@@ -47,6 +62,26 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
   const [showOnlineStatus, setShowOnlineStatus] = useState(user.showOnlineStatus !== false);
   const [showLastSeen, setShowLastSeen] = useState(user.showLastSeen !== false);
   const [readReceipts, setReadReceipts] = useState(user.readReceipts !== false);
+
+  // Synchronize live profile from Firestore for other users so updates are seen immediately
+  useEffect(() => {
+    if (!isSelf && user.uid) {
+      getUserProfile(user.uid).then(live => {
+        if (live) {
+          setDisplayName(live.displayName || live.username);
+          setUsername(live.username);
+          setBio(live.bio || '');
+          setAvatarUrl(live.avatarUrl);
+          setIsDiscoverable(live.isDiscoverable !== false);
+          setShowOnlineStatus(live.showOnlineStatus !== false);
+          setShowLastSeen(live.showLastSeen !== false);
+          setReadReceipts(live.readReceipts !== false);
+        }
+      }).catch(err => {
+        console.warn('Could not load live profile:', err);
+      });
+    }
+  }, [user.uid, isSelf]);
 
   const [copiedId, setCopiedId] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -110,6 +145,23 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!profile) return;
+
+    // Validation
+    const cleanName = displayName.trim();
+    if (!cleanName || cleanName.length < 1) {
+      setError('Please provide a valid display name.');
+      return;
+    }
+    const cleanUsername = username.trim().toLowerCase().replace(/[^a-z0-9_]/g, '');
+    if (cleanUsername.length < 3 || cleanUsername.length > 24) {
+      setError('Username must be between 3 and 24 characters (letters, numbers, underscores).');
+      return;
+    }
+    if (bio.length > 160) {
+      setError('Bio must be 160 characters or less.');
+      return;
+    }
+
     setSaving(true);
     setError(null);
     setSuccess(null);
@@ -118,7 +170,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
       await updateUserProfile(
         profile.uid,
         {
-          displayName: displayName.trim(),
+          displayName: cleanName,
           avatarUrl,
           bio: bio.trim(),
           isDiscoverable,
@@ -126,11 +178,12 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
           showLastSeen,
           readReceipts,
         },
-        username.trim()
+        cleanUsername
       );
       await refreshProfile();
-      setSuccess('Profile updated successfully and synced across Duora!');
+      setSuccess('Profile updated successfully and synced across all Duora screens!');
       setIsEditing(false);
+      setTimeout(() => setSuccess(null), 3500);
     } catch (err: any) {
       setError(err?.message || 'Failed to update profile.');
     } finally {
@@ -244,24 +297,37 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
             </span>
 
             {/* Permanent Duora ID pill */}
-            <div
-              onClick={handleCopyId}
-              className="mt-3 flex items-center gap-2 px-3.5 py-1.5 rounded-full border cursor-pointer hover:opacity-80 transition shadow-2xs"
-              style={{
-                backgroundColor: theme.colors.lilac,
-                borderColor: theme.colors.border,
-                color: theme.colors.primary
-              }}
-              title="Click to copy permanent Duora ID"
-            >
-              <Lock className="w-3.5 h-3.5" />
-              <span className="font-mono text-xs font-bold tracking-wider">{user.duoraId}</span>
-              {copiedId ? (
-                <Check className="w-3.5 h-3.5 text-emerald-500" />
-              ) : (
-                <Copy className="w-3.5 h-3.5 opacity-60" />
-              )}
+            <div className="mt-3 flex flex-col items-center gap-1">
+              <div
+                onClick={handleCopyId}
+                className="flex items-center gap-2 px-3.5 py-1.5 rounded-full border cursor-pointer hover:opacity-85 transition shadow-2xs group"
+                style={{
+                  backgroundColor: theme.colors.lilac,
+                  borderColor: theme.colors.border,
+                  color: theme.colors.primary
+                }}
+                title="Click to copy permanent Duora ID"
+              >
+                <Lock className="w-3.5 h-3.5" />
+                <span className="font-mono text-xs font-bold tracking-wider">{user.duoraId}</span>
+                {copiedId ? (
+                  <Check className="w-3.5 h-3.5 text-emerald-500" />
+                ) : (
+                  <Copy className="w-3.5 h-3.5 opacity-60 group-hover:opacity-100" />
+                )}
+              </div>
+              <span className="text-[10px] text-stone-400 font-medium">
+                Permanent Duora ID • Immutable
+              </span>
             </div>
+
+            {/* Online indicator if enabled by user */}
+            {((isSelf && profile?.showOnlineStatus !== false) || (!isSelf && showOnlineStatus)) && (
+              <div className="mt-1 flex items-center gap-1.5 text-[11px] font-medium text-emerald-600 dark:text-emerald-400">
+                <span className="w-2 h-2 rounded-full bg-emerald-500" />
+                <span>{user.isOnline ? 'Active on Duora' : 'Active recently'}</span>
+              </div>
+            )}
 
             {/* Upload from phone button for self */}
             {isSelf && (
@@ -412,10 +478,17 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                 <button
                   type="submit"
                   disabled={saving}
-                  className="flex-1 py-2.5 rounded-xl font-bold text-xs text-white shadow-md transition flex items-center justify-center gap-1.5"
+                  className="flex-1 py-2.5 rounded-xl font-bold text-xs text-white shadow-md transition flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-60"
                   style={{ backgroundColor: theme.colors.primary }}
                 >
-                  {saving ? 'Saving...' : 'Save Profile'}
+                  {saving ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>Saving Changes...</span>
+                    </>
+                  ) : (
+                    <span>Save Changes</span>
+                  )}
                 </button>
               </div>
             </form>
@@ -437,14 +510,30 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
 
               {/* Action buttons */}
               {isSelf ? (
-                <button
-                  onClick={() => setIsEditing(true)}
-                  className="w-full py-2.5 rounded-xl text-white font-bold text-xs shadow-md flex items-center justify-center gap-2 hover:opacity-90 transition cursor-pointer"
-                  style={{ backgroundColor: theme.colors.primary }}
-                >
-                  <Edit3 className="w-4 h-4" />
-                  <span>Edit Profile</span>
-                </button>
+                <div className="space-y-2">
+                  <button
+                    onClick={() => setIsEditing(true)}
+                    className="w-full py-2.5 rounded-xl text-white font-bold text-xs shadow-md flex items-center justify-center gap-2 hover:opacity-90 transition cursor-pointer"
+                    style={{ backgroundColor: theme.colors.primary }}
+                  >
+                    <Edit3 className="w-4 h-4" />
+                    <span>Edit Profile</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleModalLogout}
+                    disabled={loggingOut}
+                    className="w-full py-2.5 rounded-xl border border-red-200 dark:border-red-900/60 text-red-500 hover:bg-red-50 dark:hover:bg-red-950/20 text-xs font-semibold flex items-center justify-center gap-2 transition cursor-pointer disabled:opacity-50"
+                  >
+                    {loggingOut ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <LogOut className="w-4 h-4" />
+                    )}
+                    <span>Log Out of Duora</span>
+                  </button>
+                </div>
               ) : (
                 <div className="space-y-2">
                   {onStartChat && (

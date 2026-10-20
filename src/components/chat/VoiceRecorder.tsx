@@ -56,8 +56,7 @@ export const VoiceRecorder: React.FC<VoiceRecorderProps> = ({ onSend, onCancel }
         setDuration(prev => prev + 1);
       }, 1000);
     } catch (err) {
-      console.error('Audio permission error:', err);
-      alert('Microphone access is required to record voice notes.');
+      console.warn('Audio permission error (microphone access is required):', err);
       onCancel();
     }
   };

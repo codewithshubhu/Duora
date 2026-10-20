@@ -57,9 +57,14 @@ export const RequestsScreen: React.FC<RequestsScreenProps> = ({
 
   const handleBlock = async (req: MessageRequest) => {
     if (!profile) return;
-    if (confirm(`Block @${req.senderUsername}? They won't be able to contact you or send requests.`)) {
+    try {
+      setActionLoadingId(req.id);
       await toggleBlockUser(profile.uid, req.senderId, true);
       await declineMessageRequest(req.id);
+    } catch (err) {
+      console.error('Failed to block sender:', err);
+    } finally {
+      setActionLoadingId(null);
     }
   };
 

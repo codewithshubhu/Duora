@@ -124,10 +124,26 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const signOut = async () => {
-    if (currentUser) {
-      await setUserOnlineStatus(currentUser.uid, false);
+    try {
+      if (currentUser) {
+        await setUserOnlineStatus(currentUser.uid, false).catch((err) => {
+          console.warn('Could not update offline status before sign out:', err);
+        });
+      }
+    } catch (e) {
+      console.warn('Sign out cleanup error:', e);
     }
-    await fbSignOut(auth);
+
+    try {
+      await fbSignOut(auth);
+    } catch (err) {
+      console.error('Firebase sign out error:', err);
+    } finally {
+      setCurrentUser(null);
+      setProfile(null);
+      setPrivateInfo(null);
+      setEmailVerified(false);
+    }
   };
 
   const sendVerificationEmail = async () => {

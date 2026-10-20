@@ -28,7 +28,8 @@ import {
   Sun,
   Bell,
   Sliders,
-  UserCheck
+  UserCheck,
+  Loader2
 } from 'lucide-react';
 
 interface SettingsScreenProps {
@@ -117,9 +118,22 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
     }
   };
 
-  const handleSignOut = async () => {
-    if (confirm('Are you sure you want to log out of Duora?')) {
+  const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
+
+  const handleSignOutClick = () => {
+    setShowLogoutConfirm(true);
+  };
+
+  const handleConfirmSignOut = async () => {
+    setIsLoggingOut(true);
+    try {
       await signOut();
+    } catch (err) {
+      console.error('Failed to log out:', err);
+    } finally {
+      setIsLoggingOut(false);
+      setShowLogoutConfirm(false);
     }
   };
 
@@ -146,14 +160,14 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-4 space-y-2.5">
+        <div className="flex-1 overflow-y-auto p-4 space-y-3">
           {THEMES.map(t => {
             const isSelected = theme.id === t.id;
             return (
               <div
                 key={t.id}
                 onClick={() => setThemeId(t.id)}
-                className={`p-3.5 rounded-2xl border cursor-pointer transition flex items-center justify-between shadow-2xs hover:scale-[1.01] active:scale-[0.99] ${
+                className={`p-4 rounded-2xl border cursor-pointer transition-all shadow-sm hover:shadow-md ${
                   isSelected ? 'ring-2' : ''
                 }`}
                 style={{
@@ -163,32 +177,94 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
                   '--tw-ring-color': theme.colors.primary
                 }}
               >
-                <div className="flex items-center gap-3.5">
-                  <div
-                    className="w-12 h-12 rounded-xl shadow-inner flex items-center justify-center border"
-                    style={{ backgroundColor: t.colors.background, borderColor: t.colors.border }}
-                  >
-                    <div
-                      className="w-6 h-6 rounded-lg shadow-sm"
-                      style={{ backgroundColor: t.colors.primary }}
-                    />
-                  </div>
+                <div className="flex items-start justify-between gap-3 mb-3">
                   <div>
-                    <span className="text-xs font-bold block">{t.name}</span>
-                    <span className="text-[10px] text-stone-400 flex items-center gap-1 mt-0.5">
-                      {t.isDark ? <Moon className="w-3 h-3" /> : <Sun className="w-3 h-3" />}
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-bold block">{t.name}</span>
+                      {t.id === 'royal-violet' && (
+                        <span
+                          className="px-2 py-0.5 rounded-full text-[10px] font-bold tracking-wide uppercase"
+                          style={{ backgroundColor: theme.colors.lilac, color: theme.colors.primary }}
+                        >
+                          Default
+                        </span>
+                      )}
+                    </div>
+                    <span className="text-[11px] text-stone-400 flex items-center gap-1.5 mt-0.5">
+                      {t.isDark ? <Moon className="w-3 h-3 text-indigo-400" /> : <Sun className="w-3 h-3 text-amber-500" />}
                       <span>{t.isDark ? 'Dark Mode' : 'Light Mode'}</span>
                     </span>
                   </div>
+
+                  {isSelected ? (
+                    <div
+                      className="w-6 h-6 rounded-full flex items-center justify-center text-white shrink-0 shadow-xs"
+                      style={{ backgroundColor: theme.colors.primary }}
+                    >
+                      <Check className="w-3.5 h-3.5 stroke-[3]" />
+                    </div>
+                  ) : (
+                    <div
+                      className="w-6 h-6 rounded-full border shrink-0 opacity-40 hover:opacity-100"
+                      style={{ borderColor: theme.colors.border }}
+                    />
+                  )}
                 </div>
-                {isSelected && (
-                  <div
-                    className="w-6 h-6 rounded-full flex items-center justify-center text-white"
-                    style={{ backgroundColor: theme.colors.primary }}
-                  >
-                    <Check className="w-3.5 h-3.5 stroke-[3]" />
+
+                {/* Visual Preview: Mini Chat Mock with theme background, bubbles, and surfaces */}
+                <div
+                  className="rounded-xl p-2.5 border mb-3 flex flex-col gap-1.5 shadow-inner"
+                  style={{ backgroundColor: t.colors.background, borderColor: t.colors.border }}
+                >
+                  {/* Receiver message */}
+                  <div className="flex justify-start">
+                    <div
+                      className="px-2.5 py-1 rounded-xl text-[11px] max-w-[70%] border shadow-2xs font-medium"
+                      style={{
+                        backgroundColor: t.colors.bubbleReceiver,
+                        color: t.colors.bubbleReceiverText,
+                        borderColor: t.colors.border
+                      }}
+                    >
+                      Duora preview
+                    </div>
                   </div>
-                )}
+                  {/* Sender message */}
+                  <div className="flex justify-end">
+                    <div
+                      className="px-2.5 py-1 rounded-xl text-[11px] max-w-[70%] shadow-2xs font-medium"
+                      style={{
+                        backgroundColor: t.colors.bubbleSender,
+                        color: t.colors.bubbleSenderText
+                      }}
+                    >
+                      Instant theme sync ✨
+                    </div>
+                  </div>
+                </div>
+
+                {/* Color Swatches */}
+                <div className="flex items-center justify-between pt-1">
+                  <span className="text-[10px] font-semibold text-stone-400 uppercase tracking-wider">
+                    Palette
+                  </span>
+                  <div className="flex items-center gap-1.5">
+                    {[
+                      { label: 'Primary', color: t.colors.primary },
+                      { label: 'Background', color: t.colors.background },
+                      { label: 'Surface', color: t.colors.surface },
+                      { label: 'Bubble', color: t.colors.bubbleSender },
+                      { label: 'Accent', color: t.colors.accent },
+                    ].map((swatch, i) => (
+                      <div
+                        key={i}
+                        className="w-4 h-4 rounded-full border shadow-2xs"
+                        style={{ backgroundColor: swatch.color, borderColor: t.colors.border }}
+                        title={`${swatch.label}: ${swatch.color}`}
+                      />
+                    ))}
+                  </div>
+                </div>
               </div>
             );
           })}
@@ -790,11 +866,21 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
         <div className="pt-2">
           <button
             type="button"
-            onClick={handleSignOut}
-            className="w-full p-3.5 rounded-3xl border border-red-200 dark:border-red-900/60 bg-red-50/50 dark:bg-red-950/20 text-red-500 hover:bg-red-100/50 dark:hover:bg-red-950/40 text-xs font-bold flex items-center justify-center gap-2 transition cursor-pointer shadow-2xs"
+            onClick={handleSignOutClick}
+            disabled={isLoggingOut}
+            className="w-full p-3.5 rounded-3xl border border-red-200 dark:border-red-900/60 bg-red-50/50 dark:bg-red-950/20 text-red-500 hover:bg-red-100/50 dark:hover:bg-red-950/40 text-xs font-bold flex items-center justify-center gap-2 transition cursor-pointer shadow-2xs disabled:opacity-50"
           >
-            <LogOut className="w-4 h-4" />
-            <span>Log Out of Duora</span>
+            {isLoggingOut ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" />
+                <span>Logging out...</span>
+              </>
+            ) : (
+              <>
+                <LogOut className="w-4 h-4" />
+                <span>Log Out of Duora</span>
+              </>
+            )}
           </button>
         </div>
 
@@ -802,6 +888,60 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
           Duora — Connect Privately. All rights reserved.
         </div>
       </div>
+
+      {/* Logout Confirmation Dialog (In-App Modal) */}
+      {showLogoutConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in">
+          <div
+            className="w-full max-w-sm rounded-3xl p-6 shadow-2xl border text-center animate-in zoom-in-95"
+            style={{
+              backgroundColor: theme.colors.surface,
+              borderColor: theme.colors.border,
+              color: theme.colors.text
+            }}
+          >
+            <div className="w-12 h-12 rounded-2xl bg-red-500/10 text-red-500 flex items-center justify-center mx-auto mb-4">
+              <LogOut className="w-6 h-6" />
+            </div>
+            <h3 className="font-bold text-base mb-1.5">Log out of Duora?</h3>
+            <p className="text-xs text-stone-500 dark:text-stone-400 mb-6 leading-relaxed">
+              Are you sure you want to log out? You will be returned to the sign-in screen.
+            </p>
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={() => setShowLogoutConfirm(false)}
+                disabled={isLoggingOut}
+                className="flex-1 py-2.5 rounded-2xl border text-xs font-semibold hover:opacity-80 transition cursor-pointer"
+                style={{
+                  borderColor: theme.colors.border,
+                  color: theme.colors.text
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmSignOut}
+                disabled={isLoggingOut}
+                className="flex-1 py-2.5 rounded-2xl bg-red-500 hover:bg-red-600 text-white text-xs font-bold transition flex items-center justify-center gap-2 cursor-pointer shadow-md disabled:opacity-60"
+              >
+                {isLoggingOut ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>Logging out...</span>
+                  </>
+                ) : (
+                  <>
+                    <LogOut className="w-4 h-4" />
+                    <span>Log Out</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

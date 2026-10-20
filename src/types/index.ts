@@ -33,6 +33,7 @@ export interface ConversationParticipant {
   username: string;
   duoraId: string;
   avatarUrl: string;
+  bio?: string;
   role?: 'admin' | 'member';
 }
 
