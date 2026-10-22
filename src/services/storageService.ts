@@ -1,14 +1,14 @@
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { storage } from '../firebase/config';
 
-// Compress image via HTML5 Canvas for fast delivery and fallback storage
-export async function compressImageToDataUrl(file: File, maxDimension = 480, quality = 0.82): Promise<string> {
+// Compress image via HTML5 Canvas for fast delivery and instant real-time sync
+export async function compressImageToDataUrl(file: File | Blob, maxDimension = 480, quality = 0.82): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onerror = () => reject(new Error('Failed to read file from phone.'));
+    reader.onerror = () => reject(new Error('Failed to read photo file.'));
     reader.onload = () => {
       const img = new Image();
-      img.onerror = () => reject(new Error('Invalid image file.'));
+      img.onerror = () => reject(new Error('Invalid image data.'));
       img.onload = () => {
         let width = img.width;
         let height = img.height;
@@ -26,8 +26,8 @@ export async function compressImageToDataUrl(file: File, maxDimension = 480, qua
         }
 
         const canvas = document.createElement('canvas');
-        canvas.width = width;
-        canvas.height = height;
+        canvas.width = Math.max(width, 1);
+        canvas.height = Math.max(height, 1);
         const ctx = canvas.getContext('2d');
         if (!ctx) {
           resolve(reader.result as string);
@@ -44,28 +44,34 @@ export async function compressImageToDataUrl(file: File, maxDimension = 480, qua
   });
 }
 
-// Upload profile photo: Tries Firebase Storage first, falls back to optimized compressed data URL
+// Upload profile photo: Generates optimized photo and guarantees immediate return without hanging
 export async function uploadProfilePhoto(userId: string, file: File): Promise<string> {
-  // First generate a compressed data URL ready for instant use or fallback
-  const compressedDataUrl = await compressImageToDataUrl(file, 480, 0.85);
+  // Compress to ultra-fast 256x256 avatar (~10-15KB) for instant Firestore sync
+  const compressedDataUrl = await compressImageToDataUrl(file, 256, 0.82);
 
   try {
-    // Attempt Firebase Storage upload if storage is initialized
     if (storage) {
       const storageRef = ref(storage, `avatars/${userId}_${Date.now()}.jpg`);
-      // Convert data URL to Blob
       const response = await fetch(compressedDataUrl);
       const blob = await response.blob();
-      const snapshot = await uploadBytes(storageRef, blob, {
+
+      // Wrap uploadBytes in a 1.5-second timeout so it NEVER hangs indefinitely
+      const uploadPromise = uploadBytes(storageRef, blob, {
         contentType: 'image/jpeg',
-      });
-      const downloadUrl = await getDownloadURL(snapshot.ref);
+      }).then(snapshot => getDownloadURL(snapshot.ref));
+
+      const timeoutPromise = new Promise<string>((_, reject) =>
+        setTimeout(() => reject(new Error('Storage timeout')), 1500)
+      );
+
+      const downloadUrl = await Promise.race([uploadPromise, timeoutPromise]);
       return downloadUrl;
     }
   } catch (storageErr) {
-    console.warn('Firebase Storage upload failed or restricted, using compressed photo fallback:', storageErr);
+    console.warn('Storage bucket slow or unavailable, using optimized compressed photo:', storageErr);
   }
 
-  // Fallback to high-quality compressed data URL
+  // Fallback to high-quality compressed photo (persists in Firestore directly and syncs to all users)
   return compressedDataUrl;
 }
+

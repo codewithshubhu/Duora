@@ -14,6 +14,8 @@ export interface UserProfile {
   themeId?: string;
   wallpaper?: string;
   accentColor?: string;
+  friends?: string[];
+  blockedUserIds?: string[];
   createdAt?: any;
   updatedAt?: any;
   lastSeenAt?: any;
@@ -56,7 +58,7 @@ export interface Conversation {
   updatedAt?: any;
 }
 
-export type MessageType = 'text' | 'image' | 'audio' | 'file';
+export type MessageType = 'text' | 'image' | 'audio' | 'file' | 'call';
 
 export interface MessageReply {
   id: string;
@@ -78,6 +80,9 @@ export interface Message {
   mediaName?: string;
   mediaSize?: number;
   audioDuration?: number;
+  callType?: CallType;
+  callStatus?: CallStatus;
+  callDuration?: number;
   replyTo?: MessageReply;
   reactions?: Record<string, string[]>; // emoji -> array of uids
   isEdited?: boolean;

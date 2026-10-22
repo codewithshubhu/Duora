@@ -11,7 +11,9 @@ import { ChatList } from './components/chat/ChatList';
 import { ChatWindow } from './components/chat/ChatWindow';
 import { NewChatModal } from './components/chat/NewChatModal';
 import { GroupCreateModal } from './components/chat/GroupCreateModal';
+import { GroupJoinModal } from './components/chat/GroupJoinModal';
 import { RequestsScreen } from './components/requests/RequestsScreen';
+import { FriendsScreen } from './components/friends/FriendsScreen';
 import { SearchScreen } from './components/search/SearchScreen';
 import { CallHistoryScreen } from './components/call/CallHistoryScreen';
 import { SettingsScreen } from './components/settings/SettingsScreen';
@@ -53,6 +55,7 @@ const DuoraApp: React.FC = () => {
   // Modals state
   const [showNewChatModal, setShowNewChatModal] = useState(false);
   const [showNewGroupModal, setShowNewGroupModal] = useState(false);
+  const [showJoinGroupModal, setShowJoinGroupModal] = useState(false);
   const [viewingProfileUser, setViewingProfileUser] = useState<UserProfile | null>(null);
   const [showSelfProfile, setShowSelfProfile] = useState(false);
   const [showIntroSplash, setShowIntroSplash] = useState(true);
@@ -187,6 +190,7 @@ const DuoraApp: React.FC = () => {
             setCurrentTab(tab);
           }}
           unreadChatsCount={unreadChatsCount}
+          friendsPendingCount={pendingRequestsCount}
           onOpenProfile={() => setShowSelfProfile(true)}
         />
 
@@ -207,14 +211,20 @@ const DuoraApp: React.FC = () => {
                 incomingRequests={incomingRequests}
                 selectedConversationId={selectedConversation?.id}
                 onSelectConversation={(conv) => setSelectedConversation(conv)}
-                onOpenRequests={() => setCurrentTab('requests')}
+                onOpenRequests={() => setCurrentTab('friends')}
                 onNewChat={() => setShowNewChatModal(true)}
                 onNewGroup={() => setShowNewGroupModal(true)}
+                onJoinGroup={() => setShowJoinGroupModal(true)}
+                onConversationDeleted={(convId) => {
+                  if (selectedConversation?.id === convId) {
+                    setSelectedConversation(null);
+                  }
+                }}
               />
             )}
 
-            {currentTab === 'requests' && (
-              <RequestsScreen
+            {(currentTab === 'friends' || currentTab === 'requests') && (
+              <FriendsScreen
                 incomingRequests={incomingRequests}
                 outgoingRequests={outgoingRequests}
                 onBack={() => setCurrentTab('chats')}
@@ -242,7 +252,7 @@ const DuoraApp: React.FC = () => {
               <SettingsScreen
                 onBack={() => setCurrentTab('chats')}
                 onOpenProfile={() => setShowSelfProfile(true)}
-                onOpenRequests={() => setCurrentTab('requests')}
+                onOpenRequests={() => setCurrentTab('friends')}
                 pendingRequestsCount={pendingRequestsCount}
               />
             )}
@@ -308,6 +318,7 @@ const DuoraApp: React.FC = () => {
             setCurrentTab(tab);
           }}
           unreadChatsCount={unreadChatsCount}
+          friendsPendingCount={pendingRequestsCount}
         />
       )}
 
@@ -323,6 +334,17 @@ const DuoraApp: React.FC = () => {
         <GroupCreateModal
           onClose={() => setShowNewGroupModal(false)}
           onGroupCreated={handleOpenConversation}
+        />
+      )}
+
+      {showJoinGroupModal && (
+        <GroupJoinModal
+          onClose={() => setShowJoinGroupModal(false)}
+          onGroupJoined={handleOpenConversation}
+          onOpenCreateGroup={() => {
+            setShowJoinGroupModal(false);
+            setShowNewGroupModal(true);
+          }}
         />
       )}
 

@@ -69,10 +69,10 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({ onClose, onOpenConve
         >
           <div>
             <h2 className="text-base font-bold">
-              Start a Conversation
+              New Chat
             </h2>
             <p className="text-xs text-stone-400">
-              Find contacts by permanent Duora ID (e.g. DUR-XXXX-XXXX) or username.
+              Search for users by their name or username to start chatting.
             </p>
           </div>
           <button
@@ -92,7 +92,7 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({ onClose, onOpenConve
             <Search className="absolute left-3.5 top-3 w-4 h-4 text-stone-400" />
             <input
               type="text"
-              placeholder="Enter Duora ID (DUR-...) or @username..."
+              placeholder="Search by name or username (e.g. Alex or @alex)..."
               value={searchTerm}
               onChange={(e) => handleSearch(e.target.value)}
               className="w-full pl-10 pr-4 py-2.5 text-xs rounded-xl border focus:outline-none focus:ring-2 shadow-2xs"
@@ -104,12 +104,6 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({ onClose, onOpenConve
               autoFocus
             />
           </div>
-          {isValidDuoraId(searchTerm) && (
-            <div className="mt-2 flex items-center gap-1.5 text-xs text-emerald-500 font-medium">
-              <Shield className="w-3.5 h-3.5" />
-              <span>Valid Duora ID format recognized for exact lookup</span>
-            </div>
-          )}
         </div>
 
         {actionError && (
@@ -127,17 +121,17 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({ onClose, onOpenConve
                 className="w-6 h-6 border-2 border-t-transparent rounded-full animate-spin mx-auto mb-2"
                 style={{ borderColor: theme.colors.primary, borderTopColor: 'transparent' }}
               />
-              Searching registered discoverable users...
+              Searching users...
             </div>
           ) : results.length === 0 ? (
             <div className="py-8 text-center text-stone-400 text-xs">
               {searchTerm.length >= 2 ? (
                 <>
                   <p className="font-semibold text-sm">No users found</p>
-                  <p className="mt-1">Try entering the exact Duora ID or exact username.</p>
+                  <p className="mt-1">Try searching by their name or username.</p>
                 </>
               ) : (
-                'Type at least 2 characters or paste a Duora ID to search.'
+                'Type a name or username to search.'
               )}
             </div>
           ) : (

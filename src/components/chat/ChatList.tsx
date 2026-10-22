@@ -2,7 +2,8 @@ import React, { useState } from 'react';
 import { Conversation, MessageRequest, UserProfile } from '../../types';
 import { useAuth } from '../../context/AuthContext';
 import { useTheme } from '../../context/ThemeContext';
-import { Search, Plus, Users, UserPlus, MessageSquare, Clock, ArrowRight } from 'lucide-react';
+import { deleteConversation } from '../../services/chatService';
+import { Search, Plus, Users, UserPlus, MessageSquare, Clock, ArrowRight, Trash2, Compass, Loader2 } from 'lucide-react';
 
 interface ChatListProps {
   conversations: Conversation[];
@@ -12,6 +13,8 @@ interface ChatListProps {
   onOpenRequests: () => void;
   onNewChat: () => void;
   onNewGroup: () => void;
+  onJoinGroup?: () => void;
+  onConversationDeleted?: (convId: string) => void;
 }
 
 export const ChatList: React.FC<ChatListProps> = ({
@@ -21,11 +24,14 @@ export const ChatList: React.FC<ChatListProps> = ({
   onSelectConversation,
   onOpenRequests,
   onNewChat,
-  onNewGroup
+  onNewGroup,
+  onJoinGroup,
+  onConversationDeleted
 }) => {
   const { profile } = useAuth();
   const { theme } = useTheme();
   const [filterQuery, setFilterQuery] = useState('');
+  const [showGroupMenu, setShowGroupMenu] = useState(false);
 
   const filtered = conversations.filter(conv => {
     if (!filterQuery.trim()) return true;
@@ -41,9 +47,28 @@ export const ChatList: React.FC<ChatListProps> = ({
     );
   });
 
+  const [convToDelete, setConvToDelete] = useState<Conversation | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+
+  const handleDeleteConfirm = async () => {
+    if (!convToDelete || !profile) return;
+    setIsDeleting(true);
+    try {
+      await deleteConversation(convToDelete.id, profile.uid);
+      if (onConversationDeleted) {
+        onConversationDeleted(convToDelete.id);
+      }
+    } catch (err) {
+      console.error('Failed to delete conversation:', err);
+    } finally {
+      setIsDeleting(false);
+      setConvToDelete(null);
+    }
+  };
+
   return (
     <div
-      className="flex flex-col h-full border-r select-none"
+      className="flex flex-col h-full border-r select-none relative"
       style={{
         backgroundColor: theme.colors.surface,
         borderColor: theme.colors.border,
@@ -62,16 +87,64 @@ export const ChatList: React.FC<ChatListProps> = ({
           <h1 className="text-xl font-bold tracking-tight">
             Messages
           </h1>
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-1.5 relative">
+            {/* Merged Group Options Popover */}
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setShowGroupMenu(!showGroupMenu)}
+                className="p-2 rounded-xl hover:opacity-80 transition cursor-pointer"
+                style={{ color: theme.colors.textMuted }}
+                title="Groups"
+              >
+                <Users className="w-5 h-5" />
+              </button>
+
+              {showGroupMenu && (
+                <>
+                  <div
+                    className="fixed inset-0 z-40"
+                    onClick={() => setShowGroupMenu(false)}
+                  />
+                  <div
+                    className="absolute right-0 mt-2 w-48 rounded-2xl shadow-xl border p-1.5 z-50 animate-in fade-in zoom-in-95 text-xs font-medium"
+                    style={{
+                      backgroundColor: theme.colors.surface,
+                      borderColor: theme.colors.border,
+                      color: theme.colors.text
+                    }}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowGroupMenu(false);
+                        onNewGroup();
+                      }}
+                      className="w-full text-left px-3 py-2.5 rounded-xl hover:bg-black/5 dark:hover:bg-white/5 transition flex items-center gap-2.5 cursor-pointer"
+                    >
+                      <Plus className="w-4 h-4 text-[#7057E8]" />
+                      <span>Create New Group</span>
+                    </button>
+                    {onJoinGroup && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowGroupMenu(false);
+                          onJoinGroup();
+                        }}
+                        className="w-full text-left px-3 py-2.5 rounded-xl hover:bg-black/5 dark:hover:bg-white/5 transition flex items-center gap-2.5 cursor-pointer"
+                      >
+                        <Compass className="w-4 h-4 text-emerald-500" />
+                        <span>Browse & Join Groups</span>
+                      </button>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+
             <button
-              onClick={onNewGroup}
-              className="p-2 rounded-xl hover:opacity-80 transition cursor-pointer"
-              style={{ color: theme.colors.textMuted }}
-              title="Create Group"
-            >
-              <Users className="w-5 h-5" />
-            </button>
-            <button
+              type="button"
               onClick={onNewChat}
               className="p-2 rounded-xl text-white hover:opacity-90 transition shadow-sm cursor-pointer"
               style={{ backgroundColor: theme.colors.primary }}
@@ -176,7 +249,7 @@ export const ChatList: React.FC<ChatListProps> = ({
               <div
                 key={conv.id}
                 onClick={() => onSelectConversation(conv)}
-                className={`flex items-center gap-3 p-3.5 cursor-pointer transition select-none ${
+                className={`group flex items-center gap-3 p-3.5 cursor-pointer transition select-none ${
                   isSelected
                     ? 'border-l-4'
                     : 'hover:opacity-85'
@@ -215,14 +288,27 @@ export const ChatList: React.FC<ChatListProps> = ({
                     <p className="text-xs text-stone-400 truncate">
                       {conv.lastMessage || 'No messages yet'}
                     </p>
-                    {unread > 0 && (
-                      <span
-                        className="px-1.5 py-0.5 rounded-full text-white text-[10px] font-bold shrink-0"
-                        style={{ backgroundColor: theme.colors.primary }}
+                    <div className="flex items-center gap-1 shrink-0">
+                      {unread > 0 && (
+                        <span
+                          className="px-1.5 py-0.5 rounded-full text-white text-[10px] font-bold shrink-0"
+                          style={{ backgroundColor: theme.colors.primary }}
+                        >
+                          {unread}
+                        </span>
+                      )}
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setConvToDelete(conv);
+                        }}
+                        className="opacity-0 group-hover:opacity-100 p-1.5 rounded-lg hover:bg-red-500/15 text-stone-400 hover:text-red-500 transition cursor-pointer"
+                        title="Delete Chat"
                       >
-                        {unread}
-                      </span>
-                    )}
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -230,6 +316,66 @@ export const ChatList: React.FC<ChatListProps> = ({
           })
         )}
       </div>
+
+      {/* Delete Chat Confirmation Modal */}
+      {convToDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in select-none">
+          <div
+            className="w-full max-w-sm rounded-3xl p-6 shadow-2xl border text-center animate-in zoom-in-95"
+            style={{
+              backgroundColor: theme.colors.surface,
+              borderColor: theme.colors.border,
+              color: theme.colors.text
+            }}
+          >
+            <div className="w-12 h-12 rounded-2xl bg-red-500/10 text-red-500 flex items-center justify-center mx-auto mb-4">
+              <Trash2 className="w-6 h-6" />
+            </div>
+            <h3 className="font-bold text-base mb-1.5">Delete Chat?</h3>
+            <p className="text-xs text-stone-500 dark:text-stone-400 mb-6 leading-relaxed">
+              Are you sure you want to delete this conversation with{' '}
+              <strong className="text-stone-800 dark:text-stone-200">
+                {convToDelete.type === 'group'
+                  ? convToDelete.groupName
+                  : Object.values(convToDelete.participants || {}).find(p => p.uid !== profile?.uid)?.displayName || 'this contact'}
+              </strong>
+              ? This will remove the chat from your messages list.
+            </p>
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={() => setConvToDelete(null)}
+                disabled={isDeleting}
+                className="flex-1 py-2.5 rounded-2xl border text-xs font-semibold hover:opacity-80 transition cursor-pointer"
+                style={{
+                  borderColor: theme.colors.border,
+                  color: theme.colors.text
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleDeleteConfirm}
+                disabled={isDeleting}
+                className="flex-1 py-2.5 rounded-2xl bg-red-500 hover:bg-red-600 text-white text-xs font-bold transition flex items-center justify-center gap-2 cursor-pointer shadow-md disabled:opacity-60"
+              >
+                {isDeleting ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>Deleting...</span>
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="w-4 h-4" />
+                    <span>Delete</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

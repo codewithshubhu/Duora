@@ -1,20 +1,46 @@
 import React, { useState } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { DuoraLogo } from '../common/DuoraLogo';
-import { Lock, Mail, User, ShieldCheck, ArrowRight, KeyRound, Sparkles, AlertCircle } from 'lucide-react';
+import { Lock, Mail, User, ArrowRight, KeyRound, AlertCircle, CheckCircle2 } from 'lucide-react';
 import { isValidUsername } from '../../utils/duoraId';
+import { doc, getDoc, collection, query, where, getDocs } from 'firebase/firestore';
+import { db } from '../../firebase/config';
 
 export const AuthModal: React.FC = () => {
   const { signInWithEmail, signUpWithEmail, signInWithGoogle, resetPassword } = useAuth();
 
   const [mode, setMode] = useState<'login' | 'register' | 'forgot'>('login');
-  const [email, setEmail] = useState('');
+  const [identifier, setIdentifier] = useState(''); // email or username
+  const [email, setEmail] = useState(''); // for registration / password reset
   const [password, setPassword] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [username, setUsername] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+
+  const resolveEmail = async (input: string): Promise<string> => {
+    const trimmed = input.trim();
+    if (trimmed.includes('@')) {
+      return trimmed;
+    }
+    const clean = trimmed.replace(/^@/, '').toLowerCase();
+    if (!clean) {
+      throw new Error('Please enter your email or username.');
+    }
+    // Check usernames collection
+    const uDoc = await getDoc(doc(db, 'usernames', clean));
+    if (uDoc.exists() && uDoc.data()?.email) {
+      return uDoc.data().email;
+    }
+    // Fallback search in users collection
+    const q = query(collection(db, 'users'), where('usernameLower', '==', clean));
+    const snap = await getDocs(q);
+    if (!snap.empty && snap.docs[0].data()?.email) {
+      return snap.docs[0].data().email;
+    }
+    throw new Error(`No account found with username "@${clean}". Try using your email.`);
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -24,10 +50,17 @@ export const AuthModal: React.FC = () => {
 
     try {
       if (mode === 'login') {
-        await signInWithEmail(email, password);
+        if (!identifier.trim()) {
+          throw new Error('Please enter your email or username.');
+        }
+        if (!password) {
+          throw new Error('Please enter your password.');
+        }
+        const resolvedEmail = await resolveEmail(identifier);
+        await signInWithEmail(resolvedEmail, password);
       } else if (mode === 'register') {
         if (!displayName.trim()) {
-          throw new Error('Please enter your full name or display name.');
+          throw new Error('Please enter your full name.');
         }
         if (username && !isValidUsername(username)) {
           throw new Error('Username must be 3-30 characters (letters, numbers, underscores).');
@@ -36,23 +69,23 @@ export const AuthModal: React.FC = () => {
           throw new Error('Password must be at least 6 characters.');
         }
         await signUpWithEmail(email, password, displayName, username);
-        setSuccess('Account created! A verification email has been sent. Please verify your email.');
+        setSuccess('Account created! A verification link has been sent to your email.');
       } else if (mode === 'forgot') {
         if (!email.trim()) {
-          throw new Error('Please enter your registered email address.');
+          throw new Error('Please enter your email address.');
         }
         await resetPassword(email);
-        setSuccess('Password reset link sent! Check your inbox to reset your password.');
+        setSuccess('Password reset link sent to your email.');
       }
     } catch (err: any) {
       console.error('Auth error:', err);
       let msg = err.message || 'Authentication failed. Please try again.';
-      if (msg.includes('auth/invalid-credential') || msg.includes('auth/wrong-password')) {
-        msg = 'Invalid email or password. Please verify and try again.';
+      if (msg.includes('auth/invalid-credential') || msg.includes('auth/wrong-password') || msg.includes('auth/user-not-found')) {
+        msg = 'Invalid credentials. Please verify your email or username and password.';
       } else if (msg.includes('auth/email-already-in-use')) {
-        msg = 'An account already exists with this email. Try logging in.';
+        msg = 'An account already exists with this email.';
       } else if (msg.includes('auth/weak-password')) {
-        msg = 'Password is too weak. Please choose at least 6 characters.';
+        msg = 'Password must be at least 6 characters.';
       }
       setError(msg);
     } finally {
@@ -74,66 +107,37 @@ export const AuthModal: React.FC = () => {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-md">
-      <div className="w-full max-w-md bg-white dark:bg-[#1A1826] rounded-3xl shadow-2xl border border-violet-100 dark:border-violet-900/40 overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+      <div className="w-full max-w-md bg-white dark:bg-[#1A1826] rounded-3xl shadow-2xl border border-stone-200 dark:border-stone-800 overflow-hidden animate-in fade-in zoom-in-95 duration-200">
         
-        {/* Top Header Card */}
-        <div className="bg-gradient-to-br from-[#7057E8] via-[#5B42D6] to-[#422BBF] p-8 text-white text-center relative overflow-hidden">
-          {/* Subtle decorative circles */}
-          <div className="absolute -top-12 -right-12 w-36 h-36 rounded-full bg-white/10 blur-xl pointer-events-none" />
-          <div className="absolute -bottom-8 -left-8 w-28 h-28 rounded-full bg-lilac/10 blur-lg pointer-events-none" />
-
-          <div className="flex justify-center mb-3">
+        {/* Header */}
+        <div className="p-7 text-center border-b border-stone-100 dark:border-stone-800">
+          <div className="flex justify-center mb-2.5">
             <DuoraLogo size="lg" showTagline={false} />
           </div>
-          <h2 className="text-xl font-bold tracking-tight">Connect Privately.</h2>
-          <p className="text-xs text-white/80 mt-1 max-w-xs mx-auto">
-            Encrypted session transport, permanent Duora IDs, and zero-spam message requests.
+          <h2 className="text-xl font-bold tracking-tight text-stone-900 dark:text-white">
+            {mode === 'login' ? 'Welcome Back' : mode === 'register' ? 'Create Your Account' : 'Reset Password'}
+          </h2>
+          <p className="text-xs text-stone-500 dark:text-stone-400 mt-1">
+            {mode === 'login'
+              ? 'Sign in to access your chats and calls'
+              : mode === 'register'
+              ? 'Connect with friends and start talking'
+              : 'Enter your email to receive a password reset link'}
           </p>
-
-          <div className="mt-3 inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-white/15 text-[11px] font-medium text-white/90">
-            <ShieldCheck className="w-3.5 h-3.5 text-emerald-300" />
-            <span>Built by Shubham Mishra</span>
-          </div>
-        </div>
-
-        {/* Tab Switcher */}
-        <div className="flex border-b border-stone-200 dark:border-stone-800 bg-stone-50 dark:bg-stone-900/50">
-          <button
-            type="button"
-            onClick={() => { setMode('login'); setError(null); setSuccess(null); }}
-            className={`flex-1 py-3 text-sm font-semibold transition border-b-2 ${
-              mode === 'login'
-                ? 'border-[#7057E8] text-[#7057E8] bg-white dark:bg-[#1A1826]'
-                : 'border-transparent text-stone-500 hover:text-stone-800 dark:hover:text-stone-200'
-            }`}
-          >
-            Log In
-          </button>
-          <button
-            type="button"
-            onClick={() => { setMode('register'); setError(null); setSuccess(null); }}
-            className={`flex-1 py-3 text-sm font-semibold transition border-b-2 ${
-              mode === 'register'
-                ? 'border-[#7057E8] text-[#7057E8] bg-white dark:bg-[#1A1826]'
-                : 'border-transparent text-stone-500 hover:text-stone-800 dark:hover:text-stone-200'
-            }`}
-          >
-            Create Account
-          </button>
         </div>
 
         {/* Form Container */}
         <div className="p-6">
           {error && (
-            <div className="mb-4 p-3 rounded-xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900/50 text-red-600 dark:text-red-400 text-xs flex items-center gap-2">
+            <div className="mb-4 p-3 rounded-2xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900/50 text-red-600 dark:text-red-400 text-xs flex items-center gap-2">
               <AlertCircle className="w-4 h-4 shrink-0" />
               <span>{error}</span>
             </div>
           )}
 
           {success && (
-            <div className="mb-4 p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-900/50 text-emerald-700 dark:text-emerald-300 text-xs flex items-center gap-2">
-              <Sparkles className="w-4 h-4 shrink-0" />
+            <div className="mb-4 p-3 rounded-2xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-900/50 text-emerald-700 dark:text-emerald-300 text-xs flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 shrink-0" />
               <span>{success}</span>
             </div>
           )}
@@ -143,7 +147,7 @@ export const AuthModal: React.FC = () => {
               <>
                 <div>
                   <label className="block text-xs font-semibold text-stone-600 dark:text-stone-400 mb-1">
-                    Display Name
+                    Full Name
                   </label>
                   <div className="relative">
                     <User className="absolute left-3 top-2.5 w-4 h-4 text-stone-400" />
@@ -153,14 +157,14 @@ export const AuthModal: React.FC = () => {
                       placeholder="e.g. Alex Rivers"
                       value={displayName}
                       onChange={(e) => setDisplayName(e.target.value)}
-                      className="w-full pl-9 pr-3 py-2 text-sm rounded-xl border border-stone-200 dark:border-stone-700 bg-stone-50 dark:bg-stone-800 focus:outline-none focus:ring-2 focus:ring-[#7057E8]"
+                      className="w-full pl-9 pr-3 py-2 text-sm rounded-xl border border-stone-200 dark:border-stone-700 bg-stone-50 dark:bg-stone-800 text-stone-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-[#7057E8]"
                     />
                   </div>
                 </div>
 
                 <div>
                   <label className="block text-xs font-semibold text-stone-600 dark:text-stone-400 mb-1">
-                    Username (Unique)
+                    Username
                   </label>
                   <div className="relative">
                     <span className="absolute left-3 top-2.5 text-xs font-bold text-stone-400">@</span>
@@ -169,32 +173,48 @@ export const AuthModal: React.FC = () => {
                       placeholder="alex_rivers"
                       value={username}
                       onChange={(e) => setUsername(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, ''))}
-                      className="w-full pl-8 pr-3 py-2 text-sm rounded-xl border border-stone-200 dark:border-stone-700 bg-stone-50 dark:bg-stone-800 focus:outline-none focus:ring-2 focus:ring-[#7057E8]"
+                      className="w-full pl-8 pr-3 py-2 text-sm rounded-xl border border-stone-200 dark:border-stone-700 bg-stone-50 dark:bg-stone-800 text-stone-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-[#7057E8]"
                     />
                   </div>
-                  <span className="text-[10px] text-stone-400 mt-0.5 block">
-                    Permanent Duora ID (DUR-XXXX-XXXX) will be allocated automatically.
-                  </span>
                 </div>
               </>
             )}
 
-            <div>
-              <label className="block text-xs font-semibold text-stone-600 dark:text-stone-400 mb-1">
-                Email Address
-              </label>
-              <div className="relative">
-                <Mail className="absolute left-3 top-2.5 w-4 h-4 text-stone-400" />
-                <input
-                  type="email"
-                  required
-                  placeholder="you@domain.com"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  className="w-full pl-9 pr-3 py-2 text-sm rounded-xl border border-stone-200 dark:border-stone-700 bg-stone-50 dark:bg-stone-800 focus:outline-none focus:ring-2 focus:ring-[#7057E8]"
-                />
+            {mode === 'login' ? (
+              <div>
+                <label className="block text-xs font-semibold text-stone-600 dark:text-stone-400 mb-1">
+                  Email or Username
+                </label>
+                <div className="relative">
+                  <Mail className="absolute left-3 top-2.5 w-4 h-4 text-stone-400" />
+                  <input
+                    type="text"
+                    required
+                    placeholder="email@example.com or @username"
+                    value={identifier}
+                    onChange={(e) => setIdentifier(e.target.value)}
+                    className="w-full pl-9 pr-3 py-2 text-sm rounded-xl border border-stone-200 dark:border-stone-700 bg-stone-50 dark:bg-stone-800 text-stone-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-[#7057E8]"
+                  />
+                </div>
               </div>
-            </div>
+            ) : (
+              <div>
+                <label className="block text-xs font-semibold text-stone-600 dark:text-stone-400 mb-1">
+                  Email Address
+                </label>
+                <div className="relative">
+                  <Mail className="absolute left-3 top-2.5 w-4 h-4 text-stone-400" />
+                  <input
+                    type="email"
+                    required
+                    placeholder="you@domain.com"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    className="w-full pl-9 pr-3 py-2 text-sm rounded-xl border border-stone-200 dark:border-stone-700 bg-stone-50 dark:bg-stone-800 text-stone-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-[#7057E8]"
+                  />
+                </div>
+              </div>
+            )}
 
             {mode !== 'forgot' && (
               <div>
@@ -220,7 +240,7 @@ export const AuthModal: React.FC = () => {
                     placeholder="••••••••"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
-                    className="w-full pl-9 pr-3 py-2 text-sm rounded-xl border border-stone-200 dark:border-stone-700 bg-stone-50 dark:bg-stone-800 focus:outline-none focus:ring-2 focus:ring-[#7057E8]"
+                    className="w-full pl-9 pr-3 py-2 text-sm rounded-xl border border-stone-200 dark:border-stone-700 bg-stone-50 dark:bg-stone-800 text-stone-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-[#7057E8]"
                   />
                 </div>
               </div>
@@ -229,7 +249,7 @@ export const AuthModal: React.FC = () => {
             <button
               type="submit"
               disabled={loading}
-              className="w-full mt-2 py-2.5 px-4 rounded-xl font-bold text-sm text-white bg-gradient-to-r from-[#7057E8] to-[#5B42D6] hover:opacity-95 active:scale-[0.99] transition shadow-md shadow-violet-500/20 flex items-center justify-center gap-2 cursor-pointer"
+              className="w-full mt-2 py-2.5 px-4 rounded-xl font-bold text-sm text-white bg-[#7057E8] hover:bg-[#5E44D9] active:scale-[0.99] transition shadow-md shadow-violet-500/20 flex items-center justify-center gap-2 cursor-pointer"
             >
               {loading ? (
                 <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
@@ -239,28 +259,50 @@ export const AuthModal: React.FC = () => {
                   <ArrowRight className="w-4 h-4" />
                 </>
               ) : mode === 'register' ? (
-                <>
-                  <span>Create Account</span>
-                  <Sparkles className="w-4 h-4" />
-                </>
+                <span>Create Account</span>
               ) : (
                 <>
-                  <span>Send Reset Email</span>
+                  <span>Send Reset Link</span>
                   <KeyRound className="w-4 h-4" />
                 </>
               )}
             </button>
           </form>
 
-          {mode === 'forgot' && (
-            <button
-              type="button"
-              onClick={() => { setMode('login'); setError(null); }}
-              className="w-full text-center mt-3 text-xs text-[#7057E8] font-medium hover:underline"
-            >
-              Back to Sign In
-            </button>
-          )}
+          {/* Clean toggle links: "Didn't have account? Create new account" */}
+          <div className="mt-4 text-center">
+            {mode === 'login' ? (
+              <p className="text-xs text-stone-500 dark:text-stone-400">
+                Didn't have account?{' '}
+                <button
+                  type="button"
+                  onClick={() => { setMode('register'); setError(null); setSuccess(null); }}
+                  className="font-bold text-[#7057E8] dark:text-[#A796FF] hover:underline cursor-pointer"
+                >
+                  Create new account
+                </button>
+              </p>
+            ) : mode === 'register' ? (
+              <p className="text-xs text-stone-500 dark:text-stone-400">
+                Already have an account?{' '}
+                <button
+                  type="button"
+                  onClick={() => { setMode('login'); setError(null); setSuccess(null); }}
+                  className="font-bold text-[#7057E8] dark:text-[#A796FF] hover:underline cursor-pointer"
+                >
+                  Sign In
+                </button>
+              </p>
+            ) : (
+              <button
+                type="button"
+                onClick={() => { setMode('login'); setError(null); }}
+                className="text-xs font-bold text-[#7057E8] dark:text-[#A796FF] hover:underline cursor-pointer"
+              >
+                Back to Sign In
+              </button>
+            )}
+          </div>
 
           {/* Social Sign-In Divider */}
           <div className="relative my-4">
@@ -269,7 +311,7 @@ export const AuthModal: React.FC = () => {
             </div>
             <div className="relative flex justify-center text-xs">
               <span className="px-2 bg-white dark:bg-[#1A1826] text-stone-400">
-                Or continue with
+                or
               </span>
             </div>
           </div>
@@ -279,7 +321,7 @@ export const AuthModal: React.FC = () => {
             type="button"
             onClick={handleGoogleSignIn}
             disabled={loading}
-            className="w-full py-2.5 px-4 rounded-xl border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 text-stone-700 dark:text-stone-200 hover:bg-stone-50 dark:hover:bg-stone-750 transition text-sm font-semibold flex items-center justify-center gap-2.5 cursor-pointer shadow-sm"
+            className="w-full py-2.5 px-4 rounded-xl border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 text-stone-700 dark:text-stone-200 hover:bg-stone-50 dark:hover:bg-stone-750 transition text-sm font-semibold flex items-center justify-center gap-2.5 cursor-pointer shadow-xs"
           >
             <svg className="w-4 h-4" viewBox="0 0 24 24">
               <path
@@ -301,10 +343,6 @@ export const AuthModal: React.FC = () => {
             </svg>
             <span>Sign in with Google</span>
           </button>
-        </div>
-
-        <div className="p-3 bg-stone-50 dark:bg-stone-900/50 border-t border-stone-200 dark:border-stone-800 text-center text-[10px] text-stone-400">
-          Duora enforces strict data isolation • Passwords are never stored in Firestore
         </div>
       </div>
     </div>

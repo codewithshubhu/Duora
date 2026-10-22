@@ -31,6 +31,20 @@ export const CallHistoryScreen: React.FC<CallHistoryScreenProps> = ({ onBack, on
     return `${m}m ${s}s`;
   };
 
+  const formatCallDate = (timestamp: any) => {
+    if (!timestamp) return '';
+    try {
+      const date = timestamp.toDate ? timestamp.toDate() : new Date(timestamp.seconds ? timestamp.seconds * 1000 : timestamp);
+      const now = new Date();
+      const isToday = date.toDateString() === now.toDateString();
+      const timeStr = new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: 'numeric' }).format(date);
+      if (isToday) return `Today, ${timeStr}`;
+      return new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: 'numeric' }).format(date);
+    } catch {
+      return '';
+    }
+  };
+
   return (
     <div
       className="flex flex-col h-full select-none"
@@ -55,10 +69,10 @@ export const CallHistoryScreen: React.FC<CallHistoryScreenProps> = ({ onBack, on
           </button>
           <div>
             <h1 className="text-xl font-bold tracking-tight">
-              Call Logs
+              Calls
             </h1>
             <p className="text-xs text-stone-400">
-              Recent peer-to-peer voice & video call history.
+              Recent voice & video calls.
             </p>
           </div>
         </div>
@@ -72,7 +86,7 @@ export const CallHistoryScreen: React.FC<CallHistoryScreenProps> = ({ onBack, on
               No recent calls
             </p>
             <p className="text-xs text-stone-400 mt-1 max-w-xs mx-auto">
-              Make or receive private encrypted voice and video calls with verified Duora users.
+              Make or receive voice and video calls with your friends.
             </p>
           </div>
         ) : (
@@ -82,6 +96,7 @@ export const CallHistoryScreen: React.FC<CallHistoryScreenProps> = ({ onBack, on
             const otherAvatar = isCaller ? call.receiverAvatar : call.callerAvatar;
             const otherDuoraId = isCaller ? call.receiverDuoraId : call.callerDuoraId;
             const isMissed = call.status === 'missed';
+            const timestampStr = formatCallDate(call.createdAt);
 
             return (
               <div key={call.id} className="py-3.5 flex items-center justify-between gap-3">
@@ -112,17 +127,23 @@ export const CallHistoryScreen: React.FC<CallHistoryScreenProps> = ({ onBack, on
                     <span className="font-bold text-sm block truncate">
                       {otherName}
                     </span>
-                    <div className="flex items-center gap-1.5 text-xs text-stone-400">
+                    <div className="flex items-center gap-1.5 text-xs text-stone-400 mt-0.5">
                       {isMissed ? (
-                        <PhoneMissed className="w-3.5 h-3.5 text-red-500" />
+                        <PhoneMissed className="w-3.5 h-3.5 text-red-500 shrink-0" />
                       ) : isCaller ? (
-                        <PhoneOutgoing className="w-3.5 h-3.5 text-emerald-500" />
+                        <PhoneOutgoing className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
                       ) : (
-                        <PhoneIncoming className="w-3.5 h-3.5 text-blue-500" />
+                        <PhoneIncoming className="w-3.5 h-3.5 text-blue-500 shrink-0" />
                       )}
                       <span className="capitalize">{call.type} Call</span>
                       <span>•</span>
                       <span>{call.duration ? formatDuration(call.duration) : call.status}</span>
+                      {timestampStr && (
+                        <>
+                          <span>•</span>
+                          <span className="text-[11px] font-mono">{timestampStr}</span>
+                        </>
+                      )}
                     </div>
                   </div>
                 </div>

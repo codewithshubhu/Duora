@@ -1,9 +1,9 @@
-import React from 'react';
 import {
   MessageSquare,
   Phone,
   Search,
-  Settings
+  Settings,
+  UserCheck
 } from 'lucide-react';
 import { NavTab } from './Sidebar';
 import { useTheme } from '../../context/ThemeContext';
@@ -12,17 +12,20 @@ interface BottomNavProps {
   currentTab: NavTab;
   onSelectTab: (tab: NavTab) => void;
   unreadChatsCount: number;
+  friendsPendingCount?: number;
 }
 
 export const BottomNav: React.FC<BottomNavProps> = ({
   currentTab,
   onSelectTab,
-  unreadChatsCount
+  unreadChatsCount,
+  friendsPendingCount = 0
 }) => {
   const { theme } = useTheme();
 
   const items = [
     { id: 'chats' as NavTab, label: 'Chats', icon: MessageSquare, badge: unreadChatsCount },
+    { id: 'friends' as NavTab, label: 'Friends', icon: UserCheck, badge: friendsPendingCount },
     { id: 'calls' as NavTab, label: 'Calls', icon: Phone },
     { id: 'search' as NavTab, label: 'Discover', icon: Search },
     { id: 'settings' as NavTab, label: 'Settings', icon: Settings },

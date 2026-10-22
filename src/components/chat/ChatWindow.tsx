@@ -21,12 +21,22 @@ import {
   Play,
   Pause,
   Image as ImageIcon,
-  RotateCcw
+  RotateCcw,
+  Camera,
+  LogOut,
+  Loader2,
+  Info,
+  Plus,
+  UserPlus,
+  Ban,
+  UserCheck
 } from 'lucide-react';
 import { Conversation, Message, UserProfile } from '../../types';
 import { useAuth } from '../../context/AuthContext';
 import { useTheme } from '../../context/ThemeContext';
 import { useCall } from '../../context/CallContext';
+import { doc, onSnapshot } from 'firebase/firestore';
+import { db } from '../../firebase/config';
 import {
   subscribeToMessages,
   subscribeToTyping,
@@ -36,11 +46,25 @@ import {
   editMessage,
   unsendMessage,
   deleteMessage,
-  markConversationAsRead
+  markConversationAsRead,
+  deleteConversation,
+  leaveGroupConversation
 } from '../../services/chatService';
-import { getUserProfile } from '../../services/userService';
+import { getUserProfile, toggleBlockUser } from '../../services/userService';
+import {
+  sendMessageRequest,
+  acceptMessageRequest,
+  declineMessageRequest,
+  cancelMessageRequest
+} from '../../services/requestService';
+import { compressImageToDataUrl } from '../../services/storageService';
 import { sound } from '../../utils/sound';
 import { VoiceRecorder } from './VoiceRecorder';
+import { CameraModal } from './CameraModal';
+import { MessageRow } from './MessageRow';
+import { EmojiPickerModal } from './EmojiPickerModal';
+import { ChatSettingsModal } from './ChatSettingsModal';
+import { GroupSettingsModal } from './GroupSettingsModal';
 
 interface ChatWindowProps {
   conversation: Conversation;
@@ -55,7 +79,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
   onBack,
   onOpenProfile
 }) => {
-  const { profile } = useAuth();
+  const { profile, refreshProfile } = useAuth();
   const { theme, wallpaper } = useTheme();
   const { initiateCall } = useCall();
 
@@ -76,10 +100,28 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
   const [confirmDeleteMessageId, setConfirmDeleteMessageId] = useState<string | null>(null);
   const [liveOtherUser, setLiveOtherUser] = useState<UserProfile | null>(null);
 
+  // Modals & settings state
+  const [showHeaderMenu, setShowHeaderMenu] = useState(false);
+  const [showChatSettings, setShowChatSettings] = useState(false);
+  const [showGroupSettings, setShowGroupSettings] = useState(false);
+  const [emojiPickerTargetMessage, setEmojiPickerTargetMessage] = useState<Message | null>(null);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [showLeaveGroupConfirm, setShowLeaveGroupConfirm] = useState(false);
+  const [isDeletingChat, setIsDeletingChat] = useState(false);
+  const [isLeavingGroup, setIsLeavingGroup] = useState(false);
+  const [showCameraModal, setShowCameraModal] = useState(false);
+
+  // Friend request state for direct chat
+  const [incomingReq, setIncomingReq] = useState<any>(null);
+  const [outgoingReq, setOutgoingReq] = useState<any>(null);
+  const [isReqLoading, setIsReqLoading] = useState(false);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const isNearBottomRef = useRef(true);
+  const initialScrollDoneRef = useRef(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const cameraCaptureRef = useRef<HTMLInputElement>(null);
   const audioElementsRef = useRef<Record<string, HTMLAudioElement>>({});
   const typingTimeoutRef = useRef<number | null>(null);
 
@@ -99,10 +141,41 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     }
   }, [otherParticipant?.uid]);
 
+  // Subscribe to real-time friend request state between users for direct chats
+  useEffect(() => {
+    if (!profile || conversation.type !== 'direct' || !otherParticipant?.uid) return;
+    const outRef = doc(db, 'messageRequests', `req_${profile.uid}_${otherParticipant.uid}`);
+    const inRef = doc(db, 'messageRequests', `req_${otherParticipant.uid}_${profile.uid}`);
+
+    const unsubOut = onSnapshot(outRef, (snap) => {
+      setOutgoingReq(snap.exists() ? { ...snap.data(), id: snap.id } : null);
+    }, () => {});
+
+    const unsubIn = onSnapshot(inRef, (snap) => {
+      setIncomingReq(snap.exists() ? { ...snap.data(), id: snap.id } : null);
+    }, () => {});
+
+    return () => {
+      unsubOut();
+      unsubIn();
+    };
+  }, [profile, conversation.type, otherParticipant?.uid]);
+
   const activeOtherDisplayName = liveOtherUser?.displayName || otherParticipant?.displayName || 'Duora Member';
   const activeOtherUsername = liveOtherUser?.username || otherParticipant?.username || 'user';
   const activeOtherDuoraId = liveOtherUser?.duoraId || otherParticipant?.duoraId || '';
   const activeOtherAvatar = liveOtherUser?.avatarUrl || otherParticipant?.avatarUrl || 'https://api.dicebear.com/7.x/identicon/svg?seed=user';
+
+  // Privacy & Relationship statuses
+  const isFriend = conversation.type === 'group' ||
+    Boolean(profile?.friends?.includes(otherParticipant?.uid || '')) ||
+    conversation.isAccepted ||
+    incomingReq?.status === 'accepted' ||
+    outgoingReq?.status === 'accepted';
+
+  const isBlockedByMe = profile?.blockedUserIds?.includes(otherParticipant?.uid || '') || false;
+  const isBlockedByOther = liveOtherUser?.blockedUserIds?.includes(profile?.uid || '') || false;
+  const canCommunicate = isFriend && !isBlockedByMe && !isBlockedByOther;
 
   // Mark conversation as read on mount and update
   useEffect(() => {
@@ -138,16 +211,38 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
   const handleScroll = () => {
     if (!scrollContainerRef.current) return;
     const { scrollTop, scrollHeight, clientHeight } = scrollContainerRef.current;
-    // Within 120px is considered near bottom
     isNearBottomRef.current = scrollHeight - scrollTop - clientHeight < 120;
   };
 
-  // Scroll to bottom ONLY if already near bottom (preserves reading position when scrolling up)
+  // Auto-scroll to newest message immediately when opening chat, then smooth scroll on new incoming messages
   useEffect(() => {
-    if (isNearBottomRef.current) {
+    initialScrollDoneRef.current = false;
+    isNearBottomRef.current = true;
+  }, [conversation?.id]);
+
+  useEffect(() => {
+    if (!messages.length) return;
+    if (!initialScrollDoneRef.current) {
+      initialScrollDoneRef.current = true;
+      if (scrollContainerRef.current) {
+        scrollContainerRef.current.scrollTop = scrollContainerRef.current.scrollHeight;
+      }
+      messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
+    } else if (isNearBottomRef.current) {
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
-  }, [messages]);
+  }, [messages, conversation?.id]);
+
+  // Compute ID of latest sent message so Sent/Seen only renders once
+  const latestSentMessageId = React.useMemo(() => {
+    if (!profile) return null;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].senderId === profile.uid && !messages[i].isDeleted) {
+        return messages[i].id;
+      }
+    }
+    return null;
+  }, [messages, profile?.uid]);
 
   // Typing debounce
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -213,34 +308,140 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     }
   };
 
-  // Upload photo or file from phone
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  // Upload photo or file from phone with guaranteed compression
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file || !profile || !conversation?.id) return;
 
     const isImg = file.type.startsWith('image/');
-    const reader = new FileReader();
-    reader.onload = async () => {
-      const dataUrl = reader.result as string;
-      sound.playMessageSent();
-      try {
-        await sendMessage(
-          conversation.id,
-          profile,
-          isImg ? 'Photo' : file.name,
-          isImg ? 'image' : 'file',
-          {
-            mediaUrl: dataUrl,
-            mediaName: file.name,
-            mediaSize: file.size
-          }
-        );
-      } catch (err) {
-        console.error('Failed to upload file:', err);
+    try {
+      let dataUrl: string;
+      if (isImg) {
+        // Compress to 1024px max dimension, 0.82 JPEG (~40-60KB) to ensure reliable instant Firestore delivery
+        dataUrl = await compressImageToDataUrl(file, 1024, 0.82);
+      } else {
+        dataUrl = await new Promise((resolve) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result as string);
+          reader.readAsDataURL(file);
+        });
       }
-    };
-    reader.readAsDataURL(file);
-    e.target.value = '';
+
+      sound.playMessageSent();
+      await sendMessage(
+        conversation.id,
+        profile,
+        isImg ? 'Photo' : file.name,
+        isImg ? 'image' : 'file',
+        {
+          mediaUrl: dataUrl,
+          mediaName: file.name,
+          mediaSize: file.size,
+          replyTo: replyingTo ? {
+            id: replyingTo.id,
+            senderId: replyingTo.senderId,
+            senderName: replyingTo.senderName,
+            content: replyingTo.content,
+            type: replyingTo.type || 'text'
+          } : undefined
+        }
+      );
+      setReplyingTo(null);
+    } catch (err) {
+      console.error('Failed to upload file:', err);
+    } finally {
+      e.target.value = '';
+    }
+  };
+
+  // Capture photo directly with camera
+  const handleCameraCapture = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !profile || !conversation?.id) return;
+
+    try {
+      // Compress camera photo to ~50KB to guarantee it never exceeds Firestore document limits
+      const dataUrl = await compressImageToDataUrl(file, 1024, 0.82);
+      sound.playMessageSent();
+      await sendMessage(
+        conversation.id,
+        profile,
+        'Photo',
+        'image',
+        {
+          mediaUrl: dataUrl,
+          mediaName: `photo_${Date.now()}.jpg`,
+          mediaSize: file.size,
+          replyTo: replyingTo ? {
+            id: replyingTo.id,
+            senderId: replyingTo.senderId,
+            senderName: replyingTo.senderName,
+            content: replyingTo.content,
+            type: replyingTo.type || 'text'
+          } : undefined
+        }
+      );
+      setReplyingTo(null);
+    } catch (err) {
+      console.error('Failed to send camera photo:', err);
+    } finally {
+      e.target.value = '';
+    }
+  };
+
+  const handleCameraModalCapture = async (dataUrl: string) => {
+    if (!profile || !conversation?.id) return;
+    try {
+      sound.playMessageSent();
+      await sendMessage(
+        conversation.id,
+        profile,
+        'Photo',
+        'image',
+        {
+          mediaUrl: dataUrl,
+          mediaName: `camera_${Date.now()}.jpg`,
+          replyTo: replyingTo ? {
+            id: replyingTo.id,
+            senderId: replyingTo.senderId,
+            senderName: replyingTo.senderName,
+            content: replyingTo.content,
+            type: replyingTo.type || 'text'
+          } : undefined
+        }
+      );
+      setReplyingTo(null);
+    } catch (err) {
+      console.error('Failed to send captured camera photo:', err);
+    }
+  };
+
+  const handleDeleteChatSubmit = async () => {
+    if (!profile || !conversation?.id) return;
+    setIsDeletingChat(true);
+    try {
+      await deleteConversation(conversation.id, profile.uid);
+      onBack();
+    } catch (err) {
+      console.error('Failed to delete chat:', err);
+    } finally {
+      setIsDeletingChat(false);
+      setShowDeleteConfirm(false);
+    }
+  };
+
+  const handleLeaveGroupSubmit = async () => {
+    if (!profile || !conversation?.id) return;
+    setIsLeavingGroup(true);
+    try {
+      await leaveGroupConversation(conversation.id, profile);
+      onBack();
+    } catch (err) {
+      console.error('Failed to leave group:', err);
+    } finally {
+      setIsLeavingGroup(false);
+      setShowLeaveGroupConfirm(false);
+    }
   };
 
   // Play / pause audio notes
@@ -354,25 +555,14 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
 
           <div
             onClick={() => {
-              if (liveOtherUser) {
-                onOpenProfile(liveOtherUser);
-              } else if (otherParticipant) {
-                onOpenProfile({
-                  uid: otherParticipant.uid,
-                  duoraId: otherParticipant.duoraId,
-                  username: otherParticipant.username,
-                  usernameLower: otherParticipant.username.toLowerCase(),
-                  displayName: otherParticipant.displayName,
-                  avatarUrl: otherParticipant.avatarUrl,
-                  bio: otherParticipant.bio || '',
-                  isDiscoverable: true,
-                  showOnlineStatus: true,
-                  showLastSeen: true,
-                  readReceipts: true,
-                });
+              if (conversation.type === 'direct') {
+                setShowChatSettings(true);
+              } else {
+                setShowGroupSettings(true);
               }
             }}
             className="flex items-center gap-2.5 cursor-pointer hover:opacity-90 transition min-w-0"
+            title="Open Chat Settings"
           >
             <div className="relative shrink-0">
               <img
@@ -390,19 +580,13 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
               )}
             </div>
 
-            <div className="flex flex-col min-w-0">
-              <span className="font-bold text-sm truncate" style={{ color: theme.colors.text }}>
+            <div className="flex flex-col min-w-0 text-left">
+              <span className="font-bold text-sm leading-tight" style={{ color: theme.colors.text }}>
                 {conversation.type === 'group' ? conversation.groupName : activeOtherDisplayName}
               </span>
-              <div className="flex items-center gap-1.5 text-xs" style={{ color: theme.colors.textMuted }}>
+              <div className="flex items-center text-xs mt-0.5" style={{ color: theme.colors.textMuted }}>
                 {conversation.type === 'direct' ? (
-                  <>
-                    <span className="font-mono text-[11px] font-bold" style={{ color: theme.colors.primary }}>
-                      {activeOtherDuoraId}
-                    </span>
-                    <span>•</span>
-                    <span className="truncate">@{activeOtherUsername}</span>
-                  </>
+                  <span>@{activeOtherUsername}</span>
                 ) : (
                   <span>{conversation.participantIds.length} members</span>
                 )}
@@ -413,7 +597,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
 
         {/* Header Actions */}
         <div className="flex items-center gap-1 shrink-0">
-          {conversation.type === 'direct' && otherParticipant && (
+          {conversation.type === 'direct' && otherParticipant && canCommunicate && (
             <>
               <button
                 type="button"
@@ -476,6 +660,96 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
           >
             <Search className="w-4 h-4" />
           </button>
+
+          {/* Options Dropdown Menu */}
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setShowHeaderMenu(!showHeaderMenu)}
+              className="p-2.5 rounded-xl hover:opacity-80 transition cursor-pointer"
+              style={{ color: theme.colors.textMuted }}
+              title="Chat Options"
+            >
+              <MoreVertical className="w-5 h-5" />
+            </button>
+
+            {showHeaderMenu && (
+              <div
+                className="absolute right-0 mt-2 w-52 rounded-2xl shadow-xl border p-1.5 z-50 animate-in fade-in zoom-in-95"
+                style={{
+                  backgroundColor: theme.colors.surface,
+                  borderColor: theme.colors.border,
+                  color: theme.colors.text
+                }}
+              >
+                {conversation.type === 'direct' && otherParticipant && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowHeaderMenu(false);
+                      onOpenProfile(liveOtherUser || {
+                        uid: otherParticipant.uid,
+                        duoraId: otherParticipant.duoraId,
+                        username: otherParticipant.username,
+                        usernameLower: otherParticipant.username.toLowerCase(),
+                        displayName: otherParticipant.displayName,
+                        avatarUrl: otherParticipant.avatarUrl,
+                        bio: otherParticipant.bio || '',
+                        isDiscoverable: true,
+                        showOnlineStatus: true,
+                        showLastSeen: true,
+                        readReceipts: true,
+                      });
+                    }}
+                    className="w-full text-left px-3 py-2 rounded-xl text-xs flex items-center gap-2 hover:bg-black/5 dark:hover:bg-white/5 transition cursor-pointer"
+                  >
+                    <Info className="w-4 h-4 text-stone-400" />
+                    <span>View Contact Profile</span>
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowHeaderMenu(false);
+                    setIsSearching(true);
+                  }}
+                  className="w-full text-left px-3 py-2 rounded-xl text-xs flex items-center gap-2 hover:bg-black/5 dark:hover:bg-white/5 transition cursor-pointer"
+                >
+                  <Search className="w-4 h-4 text-stone-400" />
+                  <span>Search in Conversation</span>
+                </button>
+
+                <div className="my-1 border-t" style={{ borderColor: theme.colors.border }} />
+
+                {conversation.type === 'group' && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowHeaderMenu(false);
+                      setShowLeaveGroupConfirm(true);
+                    }}
+                    className="w-full text-left px-3 py-2 rounded-xl text-xs flex items-center gap-2 text-amber-500 hover:bg-amber-500/10 transition cursor-pointer"
+                  >
+                    <LogOut className="w-4 h-4" />
+                    <span>Leave Group</span>
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowHeaderMenu(false);
+                    setShowDeleteConfirm(true);
+                  }}
+                  className="w-full text-left px-3 py-2 rounded-xl text-xs flex items-center gap-2 text-red-500 hover:bg-red-500/10 transition cursor-pointer"
+                >
+                  <Trash2 className="w-4 h-4" />
+                  <span>Delete Chat</span>
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
@@ -517,323 +791,37 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
         className="flex-1 overflow-y-auto p-4 space-y-4"
         style={getWallpaperStyle()}
       >
-        {/* Security assurance banner */}
-        <div className="flex justify-center my-2">
-          <div
-            className="px-4 py-1.5 rounded-full border text-[11px] text-center max-w-sm shadow-2xs"
-            style={{
-              backgroundColor: theme.colors.lilac,
-              borderColor: theme.colors.border,
-              color: theme.colors.primary
-            }}
-          >
-            🔒 End-to-end transport with verified Duora identity keys.
-          </div>
-        </div>
-
         {filteredMessages.map((msg) => {
           const isSender = msg.senderId === profile?.uid;
           const isRead = (msg.readBy?.length || 0) > 1;
 
           return (
-            <div
+            <MessageRow
               key={msg.id}
-              className={`flex flex-col group relative ${isSender ? 'items-end' : 'items-start'}`}
-            >
-              {/* Group sender tag */}
-              {conversation.type === 'group' && !isSender && (
-                <span className="text-[10px] font-semibold ml-1 mb-1" style={{ color: theme.colors.textMuted }}>
-                  {msg.senderName}
-                </span>
-              )}
-
-              <div className="relative max-w-[85%] sm:max-w-[70%]">
-                
-                {/* Quoted Reply Preview */}
-                {msg.replyTo && (
-                  <div
-                    className="text-xs px-3 py-1.5 mb-1 rounded-xl border-l-4 shadow-2xs opacity-90"
-                    style={{
-                      borderLeftColor: theme.colors.primary,
-                      backgroundColor: isSender ? 'rgba(0,0,0,0.15)' : theme.colors.surfaceHover,
-                      color: isSender ? '#FFFFFF' : theme.colors.text
-                    }}
-                  >
-                    <span className="font-bold block text-[10px]" style={{ color: isSender ? '#FFFFFF' : theme.colors.primary }}>
-                      {msg.replyTo.senderName}
-                    </span>
-                    <span className="line-clamp-1 italic text-[11px]">
-                      {msg.replyTo.content}
-                    </span>
-                  </div>
-                )}
-
-                {/* Message Bubble */}
-                <div
-                  onClick={() => setSelectedActionMessage(selectedActionMessage?.id === msg.id ? null : msg)}
-                  className={`p-3 rounded-2xl shadow-sm text-sm relative break-words cursor-pointer transition ${
-                    isSender
-                      ? 'rounded-br-xs'
-                      : 'rounded-bl-xs border'
-                  }`}
-                  style={{
-                    backgroundColor: isSender ? theme.colors.bubbleSender : theme.colors.bubbleReceiver,
-                    color: isSender ? theme.colors.bubbleSenderText : theme.colors.bubbleReceiverText,
-                    borderColor: isSender ? 'transparent' : theme.colors.border
-                  }}
-                >
-                  {/* Deleted message indicator */}
-                  {msg.isDeleted ? (
-                    <span className="italic text-xs opacity-70">
-                      🚫 This message was unsent
-                    </span>
-                  ) : editingMessageId === msg.id ? (
-                    <div className="flex flex-col gap-2 min-w-[220px]">
-                      <input
-                        type="text"
-                        value={editContent}
-                        onChange={(e) => setEditContent(e.target.value)}
-                        className="px-2.5 py-1.5 text-xs rounded-lg bg-white text-stone-900 border focus:outline-none"
-                        autoFocus
-                      />
-                      <div className="flex justify-end gap-1.5 text-[11px]">
-                        <button
-                          type="button"
-                          onClick={(e) => { e.stopPropagation(); setEditingMessageId(null); }}
-                          className="px-2.5 py-1 rounded bg-black/20 text-white"
-                        >
-                          Cancel
-                        </button>
-                        <button
-                          type="button"
-                          onClick={(e) => { e.stopPropagation(); handleEditSubmit(msg.id); }}
-                          className="px-3 py-1 rounded bg-white text-[#7057E8] font-bold shadow"
-                        >
-                          Save
-                        </button>
-                      </div>
-                    </div>
-                  ) : (
-                    <>
-                      {/* Photo Image */}
-                      {msg.type === 'image' && msg.mediaUrl && (
-                        <div
-                          className="mb-2 rounded-xl overflow-hidden cursor-pointer"
-                          onClick={(e) => { e.stopPropagation(); setPreviewImage(msg.mediaUrl || null); }}
-                        >
-                          <img
-                            src={msg.mediaUrl}
-                            alt="Attachment"
-                            className="max-h-64 w-full object-cover hover:scale-102 transition duration-200"
-                          />
-                        </div>
-                      )}
-
-                      {/* Voice Note Audio */}
-                      {msg.type === 'audio' && msg.mediaUrl && (
-                        <div className="flex items-center gap-3 py-1 min-w-[200px]" onClick={(e) => e.stopPropagation()}>
-                          <button
-                            type="button"
-                            onClick={() => handleAudioToggle(msg.id, msg.mediaUrl!)}
-                            className={`p-2.5 rounded-full shadow transition hover:scale-105 cursor-pointer ${
-                              isSender ? 'bg-white text-[#7057E8]' : 'bg-[#7057E8] text-white'
-                            }`}
-                          >
-                            {playingAudioId === msg.id ? (
-                              <Pause className="w-4 h-4 fill-current" />
-                            ) : (
-                              <Play className="w-4 h-4 fill-current" />
-                            )}
-                          </button>
-                          <div className="flex flex-col flex-1">
-                            <div className="h-1.5 rounded-full bg-current opacity-30 w-full" />
-                            <span className="text-[10px] mt-1 opacity-80 font-mono">
-                              Voice note {msg.audioDuration ? `(${msg.audioDuration}s)` : ''}
-                            </span>
-                          </div>
-                        </div>
-                      )}
-
-                      {/* File Attachment */}
-                      {msg.type === 'file' && (
-                        <a
-                          href={msg.mediaUrl}
-                          download={msg.mediaName || 'file'}
-                          onClick={(e) => e.stopPropagation()}
-                          className={`flex items-center gap-2 p-2 rounded-xl mb-1 ${
-                            isSender ? 'bg-white/10' : 'bg-stone-100 dark:bg-stone-800'
-                          } hover:opacity-90 transition`}
-                        >
-                          <Paperclip className="w-4 h-4 shrink-0" />
-                          <span className="truncate flex-1 text-xs">{msg.mediaName || 'Attachment'}</span>
-                          <Download className="w-3.5 h-3.5 shrink-0" />
-                        </a>
-                      )}
-
-                      {/* Text Content */}
-                      {msg.content && msg.type === 'text' && (
-                        <p className="whitespace-pre-wrap leading-relaxed text-[13.5px]">
-                          {msg.content}
-                        </p>
-                      )}
-
-                      {/* Edited flag */}
-                      {msg.isEdited && (
-                        <span className="text-[9px] opacity-65 ml-1.5 italic">(edited)</span>
-                      )}
-                    </>
-                  )}
-
-                  {/* Timestamp & Read Status Checkmark */}
-                  <div className={`flex items-center justify-end gap-1 mt-1 text-[10px] ${
-                    isSender ? 'text-white/80' : 'opacity-70'
-                  }`}>
-                    <span>
-                      {msg.createdAt?.toDate
-                        ? new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: 'numeric' }).format(msg.createdAt.toDate())
-                        : 'Just now'}
-                    </span>
-                    {isSender && (
-                      isRead ? (
-                        <span title="Read by recipient"><CheckCheck className="w-3.5 h-3.5 text-white stroke-[2.5]" /></span>
-                      ) : (
-                        <span title="Sent"><Check className="w-3.5 h-3.5 text-white/70" /></span>
-                      )
-                    )}
-                  </div>
-                </div>
-
-                {/* Reactions badge */}
-                {msg.reactions && Object.keys(msg.reactions).length > 0 && (
-                  <div className="flex flex-wrap gap-1 mt-1">
-                    {Object.entries(msg.reactions).map(([emoji, uids]) => (
-                      <button
-                        key={emoji}
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          if (profile) toggleMessageReaction(conversation.id, msg.id, emoji, profile.uid);
-                        }}
-                        className={`px-2 py-0.5 rounded-full text-xs flex items-center gap-1 border transition cursor-pointer ${
-                          profile && uids.includes(profile.uid)
-                            ? 'font-bold shadow-xs'
-                            : ''
-                        }`}
-                        style={{
-                          backgroundColor: profile && uids.includes(profile.uid) ? theme.colors.lilac : theme.colors.surface,
-                          borderColor: profile && uids.includes(profile.uid) ? theme.colors.primary : theme.colors.border,
-                          color: theme.colors.text
-                        }}
-                      >
-                        <span>{emoji}</span>
-                        <span className="text-[10px] opacity-75">{uids.length}</span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-
-                {/* Floating Desktop Hover Action Bar */}
-                <div
-                  className={`hidden md:flex absolute top-0 opacity-0 group-hover:opacity-100 transition-opacity duration-150 items-center gap-1 shadow-md border rounded-full px-2 py-1 z-20 ${
-                    isSender ? '-left-32 -top-3' : '-right-32 -top-3'
-                  }`}
-                  style={{
-                    backgroundColor: theme.colors.surface,
-                    borderColor: theme.colors.border,
-                    color: theme.colors.text
-                  }}
-                >
-                  <button
-                    type="button"
-                    onClick={(e) => { e.stopPropagation(); setReplyingTo(msg); }}
-                    className="p-1 hover:opacity-75 transition"
-                    title="Reply"
-                  >
-                    <Reply className="w-3.5 h-3.5" />
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setActiveReactionMessageId(activeReactionMessageId === msg.id ? null : msg.id);
-                    }}
-                    className="p-1 hover:opacity-75 transition"
-                    title="React"
-                  >
-                    <Smile className="w-3.5 h-3.5" />
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      navigator.clipboard.writeText(msg.content || '');
-                    }}
-                    className="p-1 hover:opacity-75 transition"
-                    title="Copy"
-                  >
-                    <Copy className="w-3.5 h-3.5" />
-                  </button>
-
-                  {isSender && !msg.isDeleted && (
-                    <>
-                      {msg.type === 'text' && (
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setEditingMessageId(msg.id);
-                            setEditContent(msg.content || '');
-                          }}
-                          className="p-1 hover:opacity-75 transition"
-                          title="Edit"
-                        >
-                          <Edit2 className="w-3.5 h-3.5" />
-                        </button>
-                      )}
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setConfirmUnsendMessageId(msg.id);
-                        }}
-                        className="p-1 hover:text-red-500 transition"
-                        title="Unsend"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </>
-                  )}
-                </div>
-
-                {/* Reaction Picker Popover */}
-                {activeReactionMessageId === msg.id && (
-                  <div
-                    className="absolute -top-11 left-0 border shadow-2xl rounded-full px-2.5 py-1.5 flex items-center gap-1.5 z-30 animate-in fade-in zoom-in-95"
-                    style={{ backgroundColor: theme.colors.surface, borderColor: theme.colors.border }}
-                  >
-                    {QUICK_EMOJIS.map((emoji) => (
-                      <button
-                        key={emoji}
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          if (profile) toggleMessageReaction(conversation.id, msg.id, emoji, profile.uid);
-                          setActiveReactionMessageId(null);
-                        }}
-                        className="text-base hover:scale-125 transition transform cursor-pointer"
-                      >
-                        {emoji}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
+              msg={msg}
+              isSender={isSender}
+              isRead={isRead}
+              isLatestSentMessage={msg.id === latestSentMessageId}
+              theme={theme}
+              onReply={(m) => setReplyingTo(m)}
+              onActionClick={(m) => setSelectedActionMessage(selectedActionMessage?.id === m.id ? null : m)}
+              onImageClick={(url) => setPreviewImage(url)}
+              onAudioToggle={(id, url) => handleAudioToggle(id, url)}
+              isPlayingAudio={playingAudioId === msg.id}
+              editingMessageId={editingMessageId}
+              editContent={editContent}
+              setEditContent={setEditContent}
+              onEditSubmit={(id) => handleEditSubmit(id)}
+              onCancelEdit={() => setEditingMessageId(null)}
+              onReact={(emoji) => {
+                if (profile) toggleMessageReaction(conversation.id, msg.id, emoji, profile.uid);
+              }}
+              onOpenEmojiPicker={(m) => setEmojiPickerTargetMessage(m)}
+              currentUserId={profile?.uid}
+              showSenderName={conversation.type === 'group' && !isSender}
+            />
           );
         })}
-
         {/* Typing indicator */}
         {typingUsers.length > 0 && (
           <div className="flex items-center gap-2 text-xs italic py-1 text-stone-400">
@@ -842,7 +830,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
               <span className="w-1.5 h-1.5 rounded-full bg-[#7057E8] animate-bounce [animation-delay:0.2s]" />
               <span className="w-1.5 h-1.5 rounded-full bg-[#7057E8] animate-bounce [animation-delay:0.4s]" />
             </div>
-            <span>Typing a secure response...</span>
+            <span>Typing...</span>
           </div>
         )}
 
@@ -869,7 +857,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
 
             {/* Quick emoji reactions */}
             <div className="flex items-center justify-around py-1">
-              {QUICK_EMOJIS.slice(0, 6).map((emoji) => (
+              {QUICK_EMOJIS.slice(0, 5).map((emoji) => (
                 <button
                   key={emoji}
                   type="button"
@@ -882,6 +870,19 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
                   {emoji}
                 </button>
               ))}
+              <button
+                type="button"
+                onClick={() => {
+                  const targetMsg = selectedActionMessage;
+                  setSelectedActionMessage(null);
+                  setEmojiPickerTargetMessage(targetMsg);
+                }}
+                className="w-9 h-9 rounded-full border flex items-center justify-center text-stone-500 hover:opacity-80 transition cursor-pointer"
+                style={{ borderColor: theme.colors.border, backgroundColor: theme.colors.background }}
+                title="All emojis"
+              >
+                <Plus className="w-5 h-5" />
+              </button>
             </div>
 
             <div className="space-y-1 pt-1">
@@ -1043,7 +1044,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
             <Reply className="w-4 h-4 shrink-0" style={{ color: theme.colors.primary }} />
             <div className="min-w-0">
               <span className="font-bold block text-[11px]" style={{ color: theme.colors.primary }}>
-                Replying to {replyingTo.senderName}
+                Replying to {replyingTo.senderId === profile?.uid ? 'yourself' : replyingTo.senderName}
               </span>
               <span className="truncate block text-[11px] opacity-75">
                 {replyingTo.content || (replyingTo.type === 'image' ? 'Photo' : 'Voice note')}
@@ -1059,8 +1060,143 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
         </div>
       )}
 
-      {/* Voice Recording Active Bar */}
-      {isRecordingVoice ? (
+      {/* Barrier when user is blocked or friend request is pending */}
+      {conversation.type === 'direct' && !canCommunicate ? (
+        <div
+          className="p-4 border-t z-10 flex flex-col items-center justify-center text-center space-y-2.5"
+          style={{
+            backgroundColor: theme.colors.surface,
+            borderColor: theme.colors.border
+          }}
+        >
+          {isBlockedByMe ? (
+            <>
+              <p className="text-xs text-stone-500 dark:text-stone-400">
+                You blocked this user. Unblock to send messages and make calls.
+              </p>
+              <button
+                type="button"
+                onClick={async () => {
+                  if (!profile || !otherParticipant) return;
+                  await toggleBlockUser(profile.uid, otherParticipant.uid, false);
+                  refreshProfile();
+                }}
+                className="px-4 py-1.5 rounded-xl border text-xs font-semibold hover:opacity-80 transition cursor-pointer"
+                style={{ borderColor: theme.colors.border, color: theme.colors.text }}
+              >
+                Unblock User
+              </button>
+            </>
+          ) : isBlockedByOther ? (
+            <p className="text-xs text-stone-500 dark:text-stone-400">
+              You cannot message or call this user.
+            </p>
+          ) : incomingReq && incomingReq.status === 'pending' ? (
+            <>
+              <p className="text-xs font-medium" style={{ color: theme.colors.text }}>
+                <strong className="font-semibold">{activeOtherDisplayName}</strong> sent you a friend request. Accept to start chatting and calling.
+              </p>
+              <div className="flex justify-center gap-3">
+                <button
+                  type="button"
+                  disabled={isReqLoading}
+                  onClick={async () => {
+                    setIsReqLoading(true);
+                    await declineMessageRequest(incomingReq.id);
+                    setIsReqLoading(false);
+                  }}
+                  className="px-4 py-2 rounded-xl border text-xs font-semibold hover:opacity-80 transition cursor-pointer"
+                  style={{ borderColor: theme.colors.border, color: theme.colors.text }}
+                >
+                  Decline
+                </button>
+                <button
+                  type="button"
+                  disabled={isReqLoading}
+                  onClick={async () => {
+                    setIsReqLoading(true);
+                    if (profile && otherParticipant) {
+                      const senderUser: UserProfile = liveOtherUser || {
+                        uid: otherParticipant.uid,
+                        duoraId: otherParticipant.duoraId,
+                        username: otherParticipant.username,
+                        usernameLower: otherParticipant.username.toLowerCase(),
+                        displayName: otherParticipant.displayName,
+                        avatarUrl: otherParticipant.avatarUrl,
+                        bio: otherParticipant.bio || '',
+                        isDiscoverable: true,
+                        showOnlineStatus: true,
+                        showLastSeen: true,
+                        readReceipts: true,
+                      };
+                      await acceptMessageRequest(incomingReq, profile, senderUser);
+                      refreshProfile();
+                    }
+                    setIsReqLoading(false);
+                  }}
+                  className="px-5 py-2 rounded-xl text-xs font-bold text-white shadow-md hover:opacity-90 transition cursor-pointer"
+                  style={{ backgroundColor: theme.colors.primary }}
+                >
+                  Accept
+                </button>
+              </div>
+            </>
+          ) : outgoingReq && outgoingReq.status === 'pending' ? (
+            <>
+              <p className="text-xs font-medium" style={{ color: theme.colors.text }}>
+                Friend request sent to <strong className="font-semibold">{activeOtherDisplayName}</strong>. You can chat once they accept.
+              </p>
+              <button
+                type="button"
+                disabled={isReqLoading}
+                onClick={async () => {
+                  setIsReqLoading(true);
+                  await cancelMessageRequest(outgoingReq.id);
+                  setIsReqLoading(false);
+                }}
+                className="px-4 py-1.5 rounded-xl border text-xs font-medium text-stone-500 hover:text-red-500 hover:border-red-300 transition cursor-pointer"
+                style={{ borderColor: theme.colors.border }}
+              >
+                Cancel Request
+              </button>
+            </>
+          ) : (
+            <>
+              <p className="text-xs font-medium" style={{ color: theme.colors.text }}>
+                Send a friend request to <strong className="font-semibold">{activeOtherDisplayName}</strong> to start chatting and calling.
+              </p>
+              <button
+                type="button"
+                disabled={isReqLoading}
+                onClick={async () => {
+                  if (!profile || !otherParticipant) return;
+                  setIsReqLoading(true);
+                  const targetUser: UserProfile = liveOtherUser || {
+                    uid: otherParticipant.uid,
+                    duoraId: otherParticipant.duoraId,
+                    username: otherParticipant.username,
+                    usernameLower: otherParticipant.username.toLowerCase(),
+                    displayName: otherParticipant.displayName,
+                    avatarUrl: otherParticipant.avatarUrl,
+                    bio: otherParticipant.bio || '',
+                    isDiscoverable: true,
+                    showOnlineStatus: true,
+                    showLastSeen: true,
+                    readReceipts: true,
+                  };
+                  await sendMessageRequest(profile, targetUser);
+                  setIsReqLoading(false);
+                }}
+                className="px-5 py-2 rounded-xl text-xs font-bold text-white shadow-md hover:opacity-90 transition cursor-pointer inline-flex items-center gap-2"
+                style={{ backgroundColor: theme.colors.primary }}
+              >
+                <UserPlus className="w-4 h-4" />
+                <span>Send Friend Request</span>
+              </button>
+            </>
+          )}
+        </div>
+      ) : isRecordingVoice ? (
         <VoiceRecorder
           onSend={handleVoiceSend}
           onCancel={() => setIsRecordingVoice(false)}
@@ -1084,19 +1220,39 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
             className="hidden"
           />
 
+          {/* Native Mobile Camera capture fallback */}
+          <input
+            type="file"
+            ref={cameraCaptureRef}
+            onChange={handleFileUpload}
+            accept="image/*"
+            capture="environment"
+            className="hidden"
+          />
+
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
             className="p-2.5 rounded-xl hover:opacity-80 transition cursor-pointer"
             style={{ color: theme.colors.textMuted }}
-            title="Attach Photo or File from Phone"
+            title="Attach Photo or File"
           >
             <ImageIcon className="w-5 h-5" />
           </button>
 
+          <button
+            type="button"
+            onClick={() => setShowCameraModal(true)}
+            className="p-2.5 rounded-xl hover:opacity-80 transition cursor-pointer"
+            style={{ color: theme.colors.textMuted }}
+            title="Take Photo"
+          >
+            <Camera className="w-5 h-5" />
+          </button>
+
           <input
             type="text"
-            placeholder="Type a private message..."
+            placeholder="Type a message..."
             value={inputText}
             onChange={handleInputChange}
             className="flex-1 py-2.5 px-3.5 text-xs rounded-xl border focus:outline-none focus:ring-2 shadow-2xs"
@@ -1148,6 +1304,188 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
             className="max-h-[85vh] max-w-[90vw] object-contain rounded-2xl shadow-2xl"
           />
         </div>
+      )}
+
+      {/* In-app Camera Modal for taking and sending live photos */}
+      {showCameraModal && (
+        <CameraModal
+          onCapture={handleCameraModalCapture}
+          onClose={() => setShowCameraModal(false)}
+        />
+      )}
+
+      {/* Delete Chat Confirmation Modal */}
+      {showDeleteConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in select-none">
+          <div
+            className="w-full max-w-sm rounded-3xl p-6 shadow-2xl border text-center animate-in zoom-in-95"
+            style={{
+              backgroundColor: theme.colors.surface,
+              borderColor: theme.colors.border,
+              color: theme.colors.text
+            }}
+          >
+            <div className="w-12 h-12 rounded-2xl bg-red-500/10 text-red-500 flex items-center justify-center mx-auto mb-4">
+              <Trash2 className="w-6 h-6" />
+            </div>
+            <h3 className="font-bold text-base mb-1.5">Delete Chat?</h3>
+            <p className="text-xs text-stone-500 dark:text-stone-400 mb-6 leading-relaxed">
+              Are you sure you want to delete this chat with{' '}
+              <strong className="text-stone-800 dark:text-stone-200">
+                {conversation.type === 'group' ? conversation.groupName : activeOtherDisplayName}
+              </strong>
+              ? This will remove the conversation from your messages.
+            </p>
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={() => setShowDeleteConfirm(false)}
+                disabled={isDeletingChat}
+                className="flex-1 py-2.5 rounded-2xl border text-xs font-semibold hover:opacity-80 transition cursor-pointer"
+                style={{
+                  borderColor: theme.colors.border,
+                  color: theme.colors.text
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleDeleteChatSubmit}
+                disabled={isDeletingChat}
+                className="flex-1 py-2.5 rounded-2xl bg-red-500 hover:bg-red-600 text-white text-xs font-bold transition flex items-center justify-center gap-2 cursor-pointer shadow-md disabled:opacity-60"
+              >
+                {isDeletingChat ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>Deleting...</span>
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="w-4 h-4" />
+                    <span>Delete</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Leave Group Confirmation Modal */}
+      {showLeaveGroupConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in select-none">
+          <div
+            className="w-full max-w-sm rounded-3xl p-6 shadow-2xl border text-center animate-in zoom-in-95"
+            style={{
+              backgroundColor: theme.colors.surface,
+              borderColor: theme.colors.border,
+              color: theme.colors.text
+            }}
+          >
+            <div className="w-12 h-12 rounded-2xl bg-amber-500/10 text-amber-500 flex items-center justify-center mx-auto mb-4">
+              <LogOut className="w-6 h-6" />
+            </div>
+            <h3 className="font-bold text-base mb-1.5">Leave Group?</h3>
+            <p className="text-xs text-stone-500 dark:text-stone-400 mb-6 leading-relaxed">
+              Are you sure you want to leave{' '}
+              <strong className="text-stone-800 dark:text-stone-200">
+                {conversation.groupName || 'this group'}
+              </strong>
+              ? You will no longer receive messages from this group unless you rejoin.
+            </p>
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={() => setShowLeaveGroupConfirm(false)}
+                disabled={isLeavingGroup}
+                className="flex-1 py-2.5 rounded-2xl border text-xs font-semibold hover:opacity-80 transition cursor-pointer"
+                style={{
+                  borderColor: theme.colors.border,
+                  color: theme.colors.text
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleLeaveGroupSubmit}
+                disabled={isLeavingGroup}
+                className="flex-1 py-2.5 rounded-2xl bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold transition flex items-center justify-center gap-2 cursor-pointer shadow-md disabled:opacity-60"
+              >
+                {isLeavingGroup ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>Leaving...</span>
+                  </>
+                ) : (
+                  <>
+                    <LogOut className="w-4 h-4" />
+                    <span>Leave</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Instagram-style Chat Settings Modal */}
+      {conversation.type === 'direct' && otherParticipant && (
+        <ChatSettingsModal
+          isOpen={showChatSettings}
+          onClose={() => setShowChatSettings(false)}
+          user={liveOtherUser || {
+            uid: otherParticipant.uid,
+            duoraId: otherParticipant.duoraId,
+            username: otherParticipant.username,
+            usernameLower: otherParticipant.username.toLowerCase(),
+            displayName: otherParticipant.displayName,
+            avatarUrl: otherParticipant.avatarUrl,
+            bio: otherParticipant.bio || '',
+            isDiscoverable: true,
+            showOnlineStatus: true,
+            showLastSeen: true,
+            readReceipts: true,
+          }}
+          onOpenProfile={(u) => {
+            setShowChatSettings(false);
+            onOpenProfile(u);
+          }}
+          onSearchInChat={() => {
+            setShowChatSettings(false);
+            setIsSearching(true);
+          }}
+          onDeleteChat={() => {
+            setShowChatSettings(false);
+            setShowDeleteConfirm(true);
+          }}
+        />
+      )}
+
+      {/* Group Settings Modal */}
+      {conversation.type === 'group' && (
+        <GroupSettingsModal
+          isOpen={showGroupSettings}
+          onClose={() => setShowGroupSettings(false)}
+          conversation={conversation}
+          onOpenProfile={onOpenProfile}
+          onLeaveGroup={() => {
+            setShowGroupSettings(false);
+            setShowLeaveGroupConfirm(true);
+          }}
+        />
+      )}
+
+      {/* Full Emoji Picker Modal for reactions */}
+      {emojiPickerTargetMessage && (
+        <EmojiPickerModal
+          onSelectEmoji={(emoji) => {
+            if (profile) toggleMessageReaction(conversation.id, emojiPickerTargetMessage.id, emoji, profile.uid);
+            setEmojiPickerTargetMessage(null);
+          }}
+          onClose={() => setEmojiPickerTargetMessage(null)}
+        />
       )}
     </div>
   );

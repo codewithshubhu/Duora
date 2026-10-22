@@ -1,19 +1,20 @@
-import React from 'react';
 import {
   MessageSquare,
   Phone,
   Search,
-  Settings
+  Settings,
+  UserCheck
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useTheme } from '../../context/ThemeContext';
 
-export type NavTab = 'chats' | 'calls' | 'search' | 'settings' | 'requests';
+export type NavTab = 'chats' | 'friends' | 'calls' | 'search' | 'settings' | 'requests';
 
 interface SidebarProps {
   currentTab: NavTab;
   onSelectTab: (tab: NavTab) => void;
   unreadChatsCount: number;
+  friendsPendingCount?: number;
   onOpenProfile: () => void;
 }
 
@@ -21,6 +22,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   currentTab,
   onSelectTab,
   unreadChatsCount,
+  friendsPendingCount = 0,
   onOpenProfile
 }) => {
   const { profile } = useAuth();
@@ -32,6 +34,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
       label: 'Chats',
       icon: MessageSquare,
       badge: unreadChatsCount,
+    },
+    {
+      id: 'friends' as NavTab,
+      label: 'Friends',
+      icon: UserCheck,
+      badge: friendsPendingCount,
     },
     {
       id: 'calls' as NavTab,

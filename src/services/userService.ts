@@ -9,7 +9,9 @@ import {
   getDocs,
   limit,
   serverTimestamp,
-  writeBatch
+  writeBatch,
+  arrayUnion,
+  arrayRemove
 } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { db, storage } from '../firebase/config';
@@ -114,6 +116,7 @@ export async function initializeUserProfile(
     batch.set(doc(db, 'usernames', chosenUsername.toLowerCase()), {
       uid,
       username: chosenUsername,
+      email: email.toLowerCase(),
       createdAt: serverTimestamp()
     });
 
@@ -246,70 +249,86 @@ export async function setUserOnlineStatus(uid: string, isOnline: boolean): Promi
   }
 }
 
-// Search users by query (Duora ID exact lookup or prefix match on username/display name)
+// Search users by query (Permanent Duora ID, username, or display name)
 export async function searchUsers(searchTerm: string, currentUserId: string): Promise<UserProfile[]> {
   const clean = searchTerm.trim();
-  if (!clean || clean.length < 2) return [];
+  if (!clean || clean.length < 1) return [];
 
   try {
+    const userCol = collection(db, 'users');
+    const resultMap = new Map<string, UserProfile>();
+
     // 1. Exact Duora ID match
     if (isValidDuoraId(clean)) {
       const q = query(
-        collection(db, 'users'),
+        userCol,
         where('duoraId', '==', clean.toUpperCase()),
         limit(5)
       );
       const snap = await getDocs(q);
-      const results: UserProfile[] = [];
       snap.forEach(d => {
         const u = d.data() as UserProfile;
-        if (u.uid !== currentUserId) results.push(u);
+        if (u.uid !== currentUserId) resultMap.set(u.uid, u);
       });
-      return results;
+      if (resultMap.size > 0) return Array.from(resultMap.values());
     }
 
     // 2. Prefix query on username
-    const norm = normalizeUsername(clean);
-    const userCol = collection(db, 'users');
+    const norm = clean.toLowerCase();
     const qUsername = query(
       userCol,
       where('usernameLower', '>=', norm),
       where('usernameLower', '<=', norm + '\uf8ff'),
-      limit(10)
+      limit(15)
     );
-    const snap = await getDocs(qUsername);
-    const users: UserProfile[] = [];
-    snap.forEach(d => {
+    const snapUser = await getDocs(qUsername);
+    snapUser.forEach(d => {
       const u = d.data() as UserProfile;
       if (u.uid !== currentUserId && u.isDiscoverable !== false) {
-        users.push(u);
+        resultMap.set(u.uid, u);
       }
     });
 
-    return users;
+    // 3. Fallback scan on display name & username for discovery
+    const qGeneral = query(userCol, limit(40));
+    const snapGen = await getDocs(qGeneral);
+    snapGen.forEach(d => {
+      const u = d.data() as UserProfile;
+      if (u.uid !== currentUserId && u.isDiscoverable !== false) {
+        const nameMatch = u.displayName?.toLowerCase().includes(norm);
+        const userMatch = u.username?.toLowerCase().includes(norm);
+        if (nameMatch || userMatch) {
+          resultMap.set(u.uid, u);
+        }
+      }
+    });
+
+    return Array.from(resultMap.values());
   } catch (error) {
     handleFirestoreError(error, OperationType.LIST, 'users');
+    return [];
   }
 }
 
-// Block / Unblock user
+// Block / Unblock user with reliable public & private synchronization
 export async function toggleBlockUser(currentUserId: string, targetUserId: string, block: boolean = true): Promise<void> {
+  if (!currentUserId || !targetUserId) return;
   try {
+    const userRef = doc(db, 'users', currentUserId);
     const privateRef = doc(db, 'users', currentUserId, 'private', 'info');
-    const snap = await getDoc(privateRef);
-    if (!snap.exists()) return;
-    const info = snap.data() as UserPrivateInfo;
-    const list = new Set(info.blockedUserIds || []);
-    if (block) {
-      list.add(targetUserId);
-    } else {
-      list.delete(targetUserId);
-    }
-    await updateDoc(privateRef, {
-      blockedUserIds: Array.from(list),
+
+    // Update public UserProfile so other users can check block status synchronously
+    await updateDoc(userRef, {
+      blockedUserIds: block ? arrayUnion(targetUserId) : arrayRemove(targetUserId),
       updatedAt: serverTimestamp()
     });
+
+    // Also update private info doc
+    await updateDoc(privateRef, {
+      blockedUserIds: block ? arrayUnion(targetUserId) : arrayRemove(targetUserId),
+      updatedAt: serverTimestamp()
+    }).catch(() => {});
   } catch (error) {
-    handleFirestoreError(error, OperationType.UPDATE, `users/${currentUserId}/private/info`);
+    handleFirestoreError(error, OperationType.UPDATE, `users/${currentUserId}`);
   }
 }

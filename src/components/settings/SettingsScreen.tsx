@@ -57,6 +57,27 @@ const ACCENT_COLORS = [
   { name: 'Pure Blue', hex: '#2563EB' }
 ];
 
+const ToggleSwitch: React.FC<{ checked: boolean; onChange: (checked: boolean) => void }> = ({
+  checked,
+  onChange
+}) => (
+  <button
+    type="button"
+    role="switch"
+    aria-checked={checked}
+    onClick={() => onChange(!checked)}
+    className={`w-11 h-6 flex items-center rounded-full p-1 transition-colors duration-200 ease-in-out cursor-pointer ${
+      checked ? 'bg-[#7057E8]' : 'bg-stone-300 dark:bg-stone-700'
+    }`}
+  >
+    <div
+      className={`bg-white w-4 h-4 rounded-full shadow-md transform transition-transform duration-200 ease-in-out ${
+        checked ? 'translate-x-5' : 'translate-x-0'
+      }`}
+    />
+  </button>
+);
+
 export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   onBack,
   onOpenProfile,
@@ -486,13 +507,6 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
                     </div>
                   )}
                 </div>
-                <div
-                  className="absolute bottom-0 right-0 p-1.5 rounded-full text-white shadow hover:scale-110 transition"
-                  style={{ backgroundColor: theme.colors.primary }}
-                  title="Upload from Phone"
-                >
-                  <Camera className="w-3.5 h-3.5" />
-                </div>
               </div>
 
               {/* Identity & Duora ID info */}
@@ -521,26 +535,20 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
               </div>
             </div>
 
-            {/* Quick Action Button */}
+            {/* Quick Action Button: Edit Profile */}
             <div className="pt-2 border-t flex items-center gap-2" style={{ borderColor: theme.colors.border }}>
               <button
                 type="button"
-                onClick={() => fileInputRef.current?.click()}
-                className="flex-1 py-1.5 px-3 rounded-xl border text-xs font-semibold flex items-center justify-center gap-1.5 hover:opacity-80 transition"
-                style={{ borderColor: theme.colors.border }}
-              >
-                <Smartphone className="w-3.5 h-3.5" style={{ color: theme.colors.primary }} />
-                <span>Change Photo</span>
-              </button>
-
-              <button
-                type="button"
                 onClick={onOpenProfile}
-                className="flex-1 py-1.5 px-3 rounded-xl border text-xs font-semibold flex items-center justify-center gap-1.5 hover:opacity-80 transition"
-                style={{ borderColor: theme.colors.border }}
+                className="w-full py-2 px-3 rounded-xl border text-xs font-semibold flex items-center justify-center gap-2 hover:opacity-85 transition cursor-pointer shadow-2xs"
+                style={{
+                  borderColor: theme.colors.primary,
+                  backgroundColor: theme.colors.lilac,
+                  color: theme.colors.primary
+                }}
               >
-                <User className="w-3.5 h-3.5" style={{ color: theme.colors.primary }} />
-                <span>Edit Profile</span>
+                <User className="w-4 h-4" />
+                <span>View & Edit Profile</span>
               </button>
             </div>
           </div>
@@ -674,15 +682,12 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
                 </div>
                 <div>
                   <span className="text-xs font-bold block">Public Discoverability</span>
-                  <span className="text-[11px] text-stone-400">Appear in Duora user searches</span>
+                  <span className="text-[11px] text-stone-400">Allow users to find you by name or username</span>
                 </div>
               </div>
-              <input
-                type="checkbox"
+              <ToggleSwitch
                 checked={isDiscoverable}
-                onChange={(e) => handleToggle('isDiscoverable', e.target.checked)}
-                className="w-4 h-4 rounded cursor-pointer"
-                style={{ accentColor: theme.colors.primary }}
+                onChange={(val) => handleToggle('isDiscoverable', val)}
               />
             </div>
 
@@ -697,12 +702,9 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
                   <span className="text-[11px] text-stone-400">Show when you are active</span>
                 </div>
               </div>
-              <input
-                type="checkbox"
+              <ToggleSwitch
                 checked={showOnlineStatus}
-                onChange={(e) => handleToggle('showOnlineStatus', e.target.checked)}
-                className="w-4 h-4 rounded cursor-pointer"
-                style={{ accentColor: theme.colors.primary }}
+                onChange={(val) => handleToggle('showOnlineStatus', val)}
               />
             </div>
 
@@ -717,15 +719,12 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
                 </div>
                 <div>
                   <span className="text-xs font-bold block">Read Receipts</span>
-                  <span className="text-[11px] text-stone-400">Double ticks when messages are read</span>
+                  <span className="text-[11px] text-stone-400">Shows "Seen" status when recipient reads your message</span>
                 </div>
               </div>
-              <input
-                type="checkbox"
+              <ToggleSwitch
                 checked={readReceipts}
-                onChange={(e) => handleToggle('readReceipts', e.target.checked)}
-                className="w-4 h-4 rounded cursor-pointer"
-                style={{ accentColor: theme.colors.primary }}
+                onChange={(val) => handleToggle('readReceipts', val)}
               />
             </div>
           </div>

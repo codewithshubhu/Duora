@@ -12,11 +12,14 @@ import {
   getDocs,
   getDoc,
   limit,
-  arrayUnion
+  arrayUnion,
+  arrayRemove,
+  addDoc,
+  deleteField
 } from 'firebase/firestore';
 import { db } from '../firebase/config';
 import { handleFirestoreError, OperationType } from '../firebase/errors';
-import { Conversation, Message, MessageType, UserProfile } from '../types';
+import { Conversation, ConversationParticipant, Message, MessageType, UserProfile, CallType, CallStatus } from '../types';
 import { cleanFirestoreObject } from '../firebase/clean';
 
 export { cleanFirestoreObject };
@@ -44,7 +47,10 @@ export function subscribeToConversations(
     (snap) => {
       const convs: Conversation[] = [];
       snap.forEach((d) => {
-        convs.push({ ...d.data(), id: d.id } as Conversation);
+        const data = d.data() as Conversation;
+        if (!data.hiddenFor?.includes(currentUserId)) {
+          convs.push({ ...data, id: d.id });
+        }
       });
       onUpdate(convs);
     },
@@ -373,7 +379,7 @@ export async function markConversationAsRead(conversationId: string, currentUser
   }
 }
 
-// Add or toggle emoji reaction on a message
+// Add or toggle emoji reaction on a message (strictly one emoji reaction per user per message)
 export async function toggleMessageReaction(
   conversationId: string,
   messageId: string,
@@ -386,19 +392,21 @@ export async function toggleMessageReaction(
     const snap = await getDoc(msgRef);
     if (!snap.exists()) return;
     const msg = snap.data() as Message;
-    const reactions = msg.reactions || {};
-    const userList = new Set(reactions[emoji] || []);
+    const rawReactions = msg.reactions || {};
+    const reactions: Record<string, string[]> = {};
+    const alreadyHadThisEmoji = (rawReactions[emoji] || []).includes(userId);
 
-    if (userList.has(userId)) {
-      userList.delete(userId);
-    } else {
-      userList.add(userId);
-    }
+    // Remove user from all existing reactions on this message
+    Object.keys(rawReactions).forEach((key) => {
+      const filtered = (rawReactions[key] || []).filter((id) => id !== userId);
+      if (filtered.length > 0) {
+        reactions[key] = filtered;
+      }
+    });
 
-    if (userList.size === 0) {
-      delete reactions[emoji];
-    } else {
-      reactions[emoji] = Array.from(userList);
+    // If user tapped a new emoji, add them
+    if (!alreadyHadThisEmoji) {
+      reactions[emoji] = [...(reactions[emoji] || []), userId];
     }
 
     await updateDoc(msgRef, { reactions });
@@ -500,5 +508,309 @@ export async function deleteMessage(
     }
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, `conversations/${conversationId}/messages/${messageId}`);
+  }
+}
+
+// Delete conversation (direct chat or group)
+export async function deleteConversation(conversationId: string, currentUserId: string): Promise<void> {
+  if (!conversationId) return;
+  const convRef = doc(db, 'conversations', conversationId);
+  try {
+    // Attempt full document deletion
+    await deleteDoc(convRef);
+  } catch (err) {
+    // Fallback: hide conversation from user's chat list
+    try {
+      await updateDoc(convRef, {
+        hiddenFor: arrayUnion(currentUserId),
+        updatedAt: serverTimestamp()
+      });
+    } catch (updateErr) {
+      handleFirestoreError(updateErr, OperationType.DELETE, `conversations/${conversationId}`);
+    }
+  }
+}
+
+// Leave a group conversation
+export async function leaveGroupConversation(conversationId: string, user: UserProfile): Promise<void> {
+  if (!conversationId || !user?.uid) return;
+  const convRef = doc(db, 'conversations', conversationId);
+  try {
+    const snap = await getDoc(convRef);
+    if (!snap.exists()) return;
+    const conv = snap.data() as Conversation;
+
+    const remainingParticipants = (conv.participantIds || []).filter(id => id !== user.uid);
+    if (remainingParticipants.length === 0) {
+      await deleteDoc(convRef);
+      return;
+    }
+
+    const updatedParticipants = { ...(conv.participants || {}) };
+    delete updatedParticipants[user.uid];
+
+    await updateDoc(convRef, cleanFirestoreObject({
+      participantIds: remainingParticipants,
+      participants: updatedParticipants,
+      lastMessage: `${user.displayName} left the group`,
+      lastMessageSenderId: user.uid,
+      lastMessageTimestamp: serverTimestamp(),
+      updatedAt: serverTimestamp()
+    }));
+
+    // Post system message
+    const msgCol = collection(db, 'conversations', conversationId, 'messages');
+    await addDoc(msgCol, cleanFirestoreObject({
+      conversationId,
+      senderId: 'system',
+      senderName: 'Duora System',
+      senderAvatar: 'https://api.dicebear.com/7.x/identicon/svg?seed=Duora',
+      content: `${user.displayName} left the group`,
+      type: 'text',
+      createdAt: serverTimestamp()
+    }));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, `conversations/${conversationId}`);
+  }
+}
+
+// Join an existing group conversation
+export async function joinGroupConversation(conversationId: string, user: UserProfile): Promise<Conversation> {
+  if (!conversationId || !user?.uid) throw new Error('Invalid conversation or user');
+  const convRef = doc(db, 'conversations', conversationId);
+  try {
+    const snap = await getDoc(convRef);
+    if (!snap.exists()) throw new Error('Group conversation not found');
+    const conv = { ...snap.data(), id: snap.id } as Conversation;
+
+    if (conv.participantIds?.includes(user.uid)) {
+      return conv;
+    }
+
+    const updatedParticipantIds = [...(conv.participantIds || []), user.uid];
+    const updatedParticipants: Record<string, ConversationParticipant> = {
+      ...(conv.participants || {}),
+      [user.uid]: {
+        uid: user.uid,
+        displayName: user.displayName,
+        username: user.username,
+        duoraId: user.duoraId,
+        avatarUrl: user.avatarUrl,
+        role: 'member'
+      }
+    };
+
+    await updateDoc(convRef, cleanFirestoreObject({
+      participantIds: updatedParticipantIds,
+      participants: updatedParticipants,
+      lastMessage: `${user.displayName} joined the group`,
+      lastMessageSenderId: user.uid,
+      lastMessageTimestamp: serverTimestamp(),
+      updatedAt: serverTimestamp()
+    }));
+
+    // Post system notification message
+    const msgCol = collection(db, 'conversations', conversationId, 'messages');
+    await addDoc(msgCol, cleanFirestoreObject({
+      conversationId,
+      senderId: 'system',
+      senderName: 'Duora System',
+      senderAvatar: 'https://api.dicebear.com/7.x/identicon/svg?seed=Duora',
+      content: `${user.displayName} joined the group`,
+      type: 'text',
+      createdAt: serverTimestamp()
+    }));
+
+    return {
+      ...conv,
+      participantIds: updatedParticipantIds,
+      participants: updatedParticipants
+    };
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, `conversations/${conversationId}`);
+    throw error;
+  }
+}
+
+// Fetch public/discoverable groups
+export async function getDiscoverableGroups(): Promise<Conversation[]> {
+  try {
+    const q = query(
+      collection(db, 'conversations'),
+      where('type', '==', 'group'),
+      limit(25)
+    );
+    const snap = await getDocs(q);
+    const groups: Conversation[] = [];
+    snap.forEach((d) => {
+      groups.push({ ...d.data(), id: d.id } as Conversation);
+    });
+    return groups;
+  } catch (err) {
+    console.warn('Failed to query discoverable groups:', err);
+    return [];
+  }
+}
+
+// Log a call event inside the direct conversation
+export async function logCallInConversation(
+  caller: UserProfile,
+  receiver: UserProfile,
+  callType: CallType,
+  callStatus: CallStatus,
+  duration?: number
+) {
+  if (!caller?.uid || !receiver?.uid) return;
+  const convId = getDirectConversationId(caller.uid, receiver.uid);
+  try {
+    await getOrCreateDirectConversation(caller, receiver);
+    const msgId = `msg_call_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+    const msgRef = doc(db, 'conversations', convId, 'messages', msgId);
+    const convRef = doc(db, 'conversations', convId);
+
+    let label = `${callType === 'video' ? 'Video' : 'Voice'} call`;
+    if (callStatus === 'missed') {
+      label = `Missed ${callType} call`;
+    } else if (callStatus === 'rejected') {
+      label = `Declined ${callType} call`;
+    } else if (callStatus === 'ended' && duration && duration > 0) {
+      const m = Math.floor(duration / 60);
+      const s = duration % 60;
+      label = `${callType === 'video' ? 'Video' : 'Voice'} call • ${m > 0 ? `${m}m ` : ''}${s}s`;
+    }
+
+    const msgData: Record<string, any> = {
+      id: msgId,
+      conversationId: convId,
+      senderId: caller.uid,
+      senderName: caller.displayName,
+      senderAvatar: caller.avatarUrl,
+      content: label,
+      type: 'call',
+      callType,
+      callStatus,
+      callDuration: duration || 0,
+      reactions: {},
+      isEdited: false,
+      isDeleted: false,
+      readBy: [caller.uid],
+      createdAt: serverTimestamp(),
+    };
+
+    await setDoc(msgRef, cleanFirestoreObject(msgData));
+    await updateDoc(convRef, cleanFirestoreObject({
+      lastMessage: label,
+      lastMessageSenderId: caller.uid,
+      lastMessageTimestamp: serverTimestamp(),
+      updatedAt: serverTimestamp()
+    })).catch(() => {});
+  } catch (err) {
+    console.warn('Could not log call message in chat:', err);
+  }
+}
+
+// Remove member from group (Admin action)
+export async function removeGroupMember(
+  conversationId: string,
+  targetUid: string,
+  adminUser: UserProfile
+): Promise<void> {
+  const convRef = doc(db, 'conversations', conversationId);
+  try {
+    const snap = await getDoc(convRef);
+    if (!snap.exists()) return;
+    const conv = snap.data() as Conversation;
+
+    // Verify admin
+    if (!conv.groupAdminIds?.includes(adminUser.uid)) {
+      throw new Error('Only group administrators can remove members.');
+    }
+
+    const updatedParticipantIds = (conv.participantIds || []).filter(id => id !== targetUid);
+    const updatedParticipants = { ...conv.participants };
+    const removedUser = updatedParticipants[targetUid];
+    delete updatedParticipants[targetUid];
+
+    await updateDoc(convRef, cleanFirestoreObject({
+      participantIds: updatedParticipantIds,
+      participants: updatedParticipants,
+      lastMessage: `${removedUser?.displayName || 'A member'} was removed from the group`,
+      lastMessageSenderId: adminUser.uid,
+      lastMessageTimestamp: serverTimestamp(),
+      updatedAt: serverTimestamp()
+    }));
+
+    // Post notification message
+    const msgCol = collection(db, 'conversations', conversationId, 'messages');
+    await addDoc(msgCol, cleanFirestoreObject({
+      conversationId,
+      senderId: 'system',
+      senderName: 'Duora System',
+      senderAvatar: 'https://api.dicebear.com/7.x/identicon/svg?seed=Duora',
+      content: `${removedUser?.displayName || 'Member'} was removed by ${adminUser.displayName}`,
+      type: 'text',
+      createdAt: serverTimestamp()
+    }));
+  } catch (err) {
+    handleFirestoreError(err, OperationType.UPDATE, `conversations/${conversationId}`);
+    throw err;
+  }
+}
+
+// Add member to group (Admin action)
+export async function addGroupMember(
+  conversationId: string,
+  newMember: UserProfile,
+  adminUser: UserProfile
+): Promise<void> {
+  const convRef = doc(db, 'conversations', conversationId);
+  try {
+    const snap = await getDoc(convRef);
+    if (!snap.exists()) return;
+    const conv = snap.data() as Conversation;
+
+    if (!conv.groupAdminIds?.includes(adminUser.uid)) {
+      throw new Error('Only group administrators can add members.');
+    }
+
+    if (conv.participantIds?.includes(newMember.uid)) {
+      return;
+    }
+
+    const updatedParticipantIds = [...(conv.participantIds || []), newMember.uid];
+    const updatedParticipants: Record<string, ConversationParticipant> = {
+      ...(conv.participants || {}),
+      [newMember.uid]: {
+        uid: newMember.uid,
+        displayName: newMember.displayName,
+        username: newMember.username,
+        duoraId: newMember.duoraId,
+        avatarUrl: newMember.avatarUrl,
+        role: 'member'
+      }
+    };
+
+    await updateDoc(convRef, cleanFirestoreObject({
+      participantIds: updatedParticipantIds,
+      participants: updatedParticipants,
+      lastMessage: `${adminUser.displayName} added ${newMember.displayName}`,
+      lastMessageSenderId: adminUser.uid,
+      lastMessageTimestamp: serverTimestamp(),
+      updatedAt: serverTimestamp()
+    }));
+
+    const msgCol = collection(db, 'conversations', conversationId, 'messages');
+    await addDoc(msgCol, cleanFirestoreObject({
+      conversationId,
+      senderId: 'system',
+      senderName: 'Duora System',
+      senderAvatar: 'https://api.dicebear.com/7.x/identicon/svg?seed=Duora',
+      content: `${adminUser.displayName} added ${newMember.displayName} to the group`,
+      type: 'text',
+      createdAt: serverTimestamp()
+    }));
+  } catch (err) {
+    handleFirestoreError(err, OperationType.UPDATE, `conversations/${conversationId}`);
+    throw err;
   }
 }

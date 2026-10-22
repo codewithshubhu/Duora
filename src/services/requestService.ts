@@ -6,8 +6,11 @@ import {
   onSnapshot,
   setDoc,
   updateDoc,
+  deleteDoc,
   getDoc,
-  serverTimestamp
+  serverTimestamp,
+  arrayUnion,
+  arrayRemove
 } from 'firebase/firestore';
 import { db } from '../firebase/config';
 import { handleFirestoreError, OperationType } from '../firebase/errors';
@@ -20,7 +23,7 @@ import { cleanFirestoreObject } from '../firebase/clean';
 export async function sendMessageRequest(
   sender: UserProfile,
   receiver: UserProfile,
-  previewText: string
+  previewText: string = ''
 ): Promise<string> {
   const reqId = `req_${sender.uid}_${receiver.uid}`;
   const reqRef = doc(db, 'messageRequests', reqId);
@@ -54,7 +57,7 @@ export async function sendMessageRequest(
       receiver.uid,
       'message_request',
       `Message Request from ${sender.displayName}`,
-      `@${sender.username} (${sender.duoraId}) wants to connect: "${newReq.previewMessage}"`,
+      `@${sender.username} wants to connect with you.`,
       { uid: sender.uid, displayName: sender.displayName, avatarUrl: sender.avatarUrl }
     );
 
@@ -66,30 +69,43 @@ export async function sendMessageRequest(
 
 // Accept a message request
 export async function acceptMessageRequest(
-  request: MessageRequest,
+  request: MessageRequest | string,
   currentUser: UserProfile,
   senderUser: UserProfile
 ): Promise<void> {
+  const reqId = typeof request === 'string' ? request : request.id;
+  const originalSenderId = typeof request === 'string' ? senderUser.uid : request.senderId;
   try {
-    const reqRef = doc(db, 'messageRequests', request.id);
+    const reqRef = doc(db, 'messageRequests', reqId);
     await updateDoc(reqRef, cleanFirestoreObject({
       status: 'accepted',
       updatedAt: serverTimestamp()
     }));
+
+    // Add both users to each other's friends array in Firestore
+    await updateDoc(doc(db, 'users', currentUser.uid), {
+      friends: arrayUnion(senderUser.uid),
+      updatedAt: serverTimestamp()
+    }).catch(() => {});
+
+    await updateDoc(doc(db, 'users', senderUser.uid), {
+      friends: arrayUnion(currentUser.uid),
+      updatedAt: serverTimestamp()
+    }).catch(() => {});
 
     // Create or activate the direct conversation
     await getOrCreateDirectConversation(currentUser, senderUser, true);
 
     // Notify original sender
     await createNotification(
-      request.senderId,
+      originalSenderId,
       'request_accepted',
       `${currentUser.displayName} accepted your request`,
-      `You can now message each other privately on Duora.`,
+      `You can now message each other privately.`,
       { uid: currentUser.uid, displayName: currentUser.displayName, avatarUrl: currentUser.avatarUrl }
     );
   } catch (error) {
-    handleFirestoreError(error, OperationType.UPDATE, `messageRequests/${request.id}`);
+    handleFirestoreError(error, OperationType.UPDATE, `messageRequests/${reqId}`);
   }
 }
 
@@ -103,6 +119,32 @@ export async function declineMessageRequest(requestId: string): Promise<void> {
     }));
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, `messageRequests/${requestId}`);
+  }
+}
+
+// Cancel a sent message request
+export async function cancelMessageRequest(requestId: string): Promise<void> {
+  try {
+    const reqRef = doc(db, 'messageRequests', requestId);
+    await deleteDoc(reqRef);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, `messageRequests/${requestId}`);
+  }
+}
+
+// Remove a friend
+export async function removeFriend(currentUserId: string, friendUid: string): Promise<void> {
+  try {
+    await updateDoc(doc(db, 'users', currentUserId), {
+      friends: arrayRemove(friendUid),
+      updatedAt: serverTimestamp()
+    });
+    await updateDoc(doc(db, 'users', friendUid), {
+      friends: arrayRemove(currentUserId),
+      updatedAt: serverTimestamp()
+    }).catch(() => {});
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, `users/${currentUserId}`);
   }
 }
 

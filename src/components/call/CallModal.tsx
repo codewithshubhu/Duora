@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useCall } from '../../context/CallContext';
 import { useAuth } from '../../context/AuthContext';
 import {
@@ -14,6 +14,7 @@ import {
   Shield,
   Sparkles,
   AlertCircle,
+  ExternalLink,
   X
 } from 'lucide-react';
 
@@ -32,15 +33,18 @@ export const CallModal: React.FC = () => {
     callDuration,
     callError,
     clearCallError,
+    isVirtualMedia,
     acceptCall,
     rejectCall,
     endCall,
     toggleAudio,
     toggleVideo,
     toggleSpeaker,
-    switchCamera
+    switchCamera,
+    retryMicrophoneAccess
   } = useCall();
 
+  const [isRetryingMic, setIsRetryingMic] = useState(false);
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
   const remoteAudioRef = useRef<HTMLAudioElement>(null);
@@ -54,13 +58,25 @@ export const CallModal: React.FC = () => {
 
   // Attach remote stream to video AND audio elements
   useEffect(() => {
-    if (remoteVideoRef.current && remoteStream) {
-      remoteVideoRef.current.srcObject = remoteStream;
-    }
-    if (remoteAudioRef.current && remoteStream) {
-      remoteAudioRef.current.srcObject = remoteStream;
-      remoteAudioRef.current.play().catch(() => {});
-    }
+    if (!remoteStream) return;
+    const attachStreams = () => {
+      if (remoteVideoRef.current && remoteVideoRef.current.srcObject !== remoteStream) {
+        remoteVideoRef.current.srcObject = remoteStream;
+        remoteVideoRef.current.play().catch(() => {});
+      }
+      if (remoteAudioRef.current && remoteAudioRef.current.srcObject !== remoteStream) {
+        remoteAudioRef.current.srcObject = remoteStream;
+        remoteAudioRef.current.play().catch(() => {});
+      }
+    };
+
+    attachStreams();
+    remoteStream.onaddtrack = attachStreams;
+    remoteStream.onremovetrack = attachStreams;
+    return () => {
+      remoteStream.onaddtrack = null;
+      remoteStream.onremovetrack = null;
+    };
   }, [remoteStream]);
 
   const formatDuration = (secs: number) => {
@@ -69,22 +85,48 @@ export const CallModal: React.FC = () => {
     return `${m < 10 ? '0' : ''}${m}:${s < 10 ? '0' : ''}${s}`;
   };
 
-  // Error Banner if call failed
+  // Error & Safe Mode Banner
   const renderErrorBanner = () => {
     if (!callError) return null;
     return (
       <div className="fixed top-6 left-1/2 -translate-x-1/2 z-50 max-w-md w-full px-4 animate-in fade-in slide-in-from-top-4">
-        <div className="p-4 rounded-2xl bg-red-600 text-white shadow-2xl flex items-start justify-between gap-3 border border-red-400">
+        <div className="p-4 rounded-2xl bg-stone-900/95 text-white shadow-2xl flex items-start justify-between gap-3 border border-[#7057E8]/50 backdrop-blur-md">
           <div className="flex items-start gap-2.5">
-            <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
+            <AlertCircle className="w-5 h-5 shrink-0 mt-0.5 text-[#7057E8]" />
             <div className="text-xs">
-              <span className="font-bold block text-sm">Call Notice</span>
-              <span>{callError}</span>
+              <span className="font-bold block text-sm mb-0.5">Call Audio Notice</span>
+              <p className="text-stone-300 leading-relaxed mb-2">{callError}</p>
+              <div className="flex items-center gap-2 mt-2">
+                <button
+                  type="button"
+                  onClick={async () => {
+                    setIsRetryingMic(true);
+                    await retryMicrophoneAccess();
+                    setIsRetryingMic(false);
+                  }}
+                  disabled={isRetryingMic}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#7057E8] text-white font-bold text-[11px] hover:bg-[#5B42D6] transition cursor-pointer"
+                >
+                  <Mic className="w-3.5 h-3.5" />
+                  <span>{isRetryingMic ? 'Requesting...' : 'Grant / Retry Mic'}</span>
+                </button>
+                {isVirtualMedia && typeof window !== 'undefined' && window.self !== window.top && (
+                  <a
+                    href={window.location.href}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white/10 text-white font-semibold text-[11px] hover:bg-white/20 transition"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5" />
+                    <span>Open Fullscreen</span>
+                  </a>
+                )}
+              </div>
             </div>
           </div>
           <button
             onClick={clearCallError}
-            className="p-1 rounded-full hover:bg-white/20 text-white shrink-0"
+            className="p-1 rounded-full hover:bg-white/20 text-stone-400 hover:text-white shrink-0 cursor-pointer"
           >
             <X className="w-4 h-4" />
           </button>
@@ -121,7 +163,7 @@ export const CallModal: React.FC = () => {
               {incomingCall.callerDuoraId}
             </span>
             <span className="text-xs text-stone-500 mt-1 block">
-              Incoming Duora {incomingCall.type} call...
+              Incoming {incomingCall.type === 'video' ? 'video' : 'voice'} call...
             </span>
 
             <div className="flex items-center gap-8 mt-8 w-full justify-center">
@@ -176,9 +218,8 @@ export const CallModal: React.FC = () => {
         {/* Top Status Bar */}
         <div className="w-full flex items-center justify-between text-white/90 z-20">
           <div className="flex items-center gap-2">
-            <Shield className="w-4 h-4 text-[#7057E8]" />
             <span className="text-xs font-semibold tracking-wide uppercase text-white/80">
-              Duora Peer-to-Peer {activeCall.type} Call
+              {activeCall.type === 'video' ? 'Video Call' : 'Voice Call'}
             </span>
           </div>
 
@@ -226,7 +267,7 @@ export const CallModal: React.FC = () => {
               </div>
             </>
           ) : (
-            /* Audio-only Ambient Wave Visualizer */
+            /* Audio-only Visualizer */
             <div className="flex flex-col items-center justify-center text-center p-6 sm:p-8">
               <div className="relative mb-6">
                 <div className="absolute -inset-4 rounded-full bg-[#7057E8]/30 blur-2xl animate-pulse" />
@@ -239,12 +280,9 @@ export const CallModal: React.FC = () => {
               <h2 className="text-xl sm:text-2xl font-bold text-white tracking-tight">
                 {otherName}
               </h2>
-              <span className="text-sm text-violet-300 font-mono mt-1">
-                {otherDuoraId}
-              </span>
-              <div className="flex items-center gap-1.5 mt-5 text-xs text-stone-400">
+              <div className="flex items-center gap-1.5 mt-4 text-xs text-stone-300">
                 <Volume2 className="w-4 h-4 text-[#7057E8]" />
-                <span>{isCallEstablished ? 'Encrypted HD Voice Transport' : 'Establishing Secure Signaling...'}</span>
+                <span>{isCallEstablished ? 'Connected' : 'Connecting...'}</span>
               </div>
             </div>
           )}

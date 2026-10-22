@@ -17,6 +17,7 @@ import { useAuth } from './AuthContext';
 import { CallRecord, CallStatus, CallType, UserProfile } from '../types';
 import { sound } from '../utils/sound';
 import { cleanFirestoreObject } from '../firebase/clean';
+import { logCallInConversation } from '../services/chatService';
 
 interface CallContextType {
   activeCall: CallRecord | null;
@@ -32,6 +33,7 @@ interface CallContextType {
   callHistory: CallRecord[];
   callError: string | null;
   clearCallError: () => void;
+  isVirtualMedia: boolean;
   initiateCall: (targetUser: UserProfile, type: CallType) => Promise<void>;
   acceptCall: () => Promise<void>;
   rejectCall: () => Promise<void>;
@@ -40,6 +42,7 @@ interface CallContextType {
   toggleVideo: () => void;
   toggleSpeaker: () => void;
   switchCamera: () => Promise<void>;
+  retryMicrophoneAccess: () => Promise<boolean>;
 }
 
 const CallContext = createContext<CallContextType | undefined>(undefined);
@@ -69,6 +72,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [callDuration, setCallDuration] = useState(0);
   const [callHistory, setCallHistory] = useState<CallRecord[]>([]);
   const [callError, setCallError] = useState<string | null>(null);
+  const [isVirtualMedia, setIsVirtualMedia] = useState(false);
 
   const peerConnection = useRef<RTCPeerConnection | null>(null);
   const callDocRef = useRef<any>(null);
@@ -210,6 +214,147 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setIsAudioMuted(false);
     setIsVideoMuted(false);
     setIsCallEstablished(false);
+    setIsVirtualMedia(false);
+  };
+
+  // Resilient multi-tier media acquisition helper (Android, desktop & iframe safe)
+  const acquireCallMediaStream = async (
+    type: CallType,
+    mode: 'user' | 'environment'
+  ): Promise<{ stream: MediaStream; isVirtual: boolean; errorNotice?: string }> => {
+    const isIframe = typeof window !== 'undefined' && window.self !== window.top;
+
+    // Direct hardware acquisition
+    if (typeof navigator !== 'undefined' && navigator.mediaDevices?.getUserMedia) {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: { ideal: true },
+            noiseSuppression: { ideal: true },
+            autoGainControl: { ideal: true }
+          },
+          video: type === 'video' ? {
+            facingMode: { ideal: mode },
+            width: { ideal: 1280 },
+            height: { ideal: 720 }
+          } : false
+        });
+        return { stream, isVirtual: false };
+      } catch (errCombined) {
+        console.warn('Unified getUserMedia failed, trying standard fallback:', errCombined);
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({
+            audio: true,
+            video: type === 'video' ? true : false
+          });
+          return { stream, isVirtual: false };
+        } catch (errRelaxed) {
+          console.warn('Relaxed getUserMedia failed:', errRelaxed);
+          if (type === 'video') {
+            try {
+              const audioOnly = await navigator.mediaDevices.getUserMedia({ audio: true });
+              return {
+                stream: audioOnly,
+                isVirtual: false,
+                errorNotice: 'Camera unavailable. Voice audio connected.'
+              };
+            } catch (errAudio) {
+              console.warn('Audio fallback failed:', errAudio);
+            }
+          }
+        }
+      }
+    }
+
+    // Tier 3: Resilient synthetic stream fallback (ensures signaling connects even if embedded iframe sandbox denies hardware)
+    const syntheticStream = new MediaStream();
+    try {
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (AudioCtx) {
+        const ctx = new AudioCtx();
+        if (ctx.state === 'suspended') {
+          ctx.resume().catch(() => {});
+        }
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        const dest = ctx.createMediaStreamDestination();
+        osc.frequency.setValueAtTime(440, ctx.currentTime);
+        gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+        osc.connect(gain);
+        gain.connect(dest);
+        osc.start();
+        dest.stream.getAudioTracks().forEach(t => syntheticStream.addTrack(t));
+      }
+    } catch (aErr) {
+      console.warn('Virtual audio generation note:', aErr);
+    }
+
+    if (type === 'video') {
+      try {
+        const canvas = document.createElement('canvas');
+        canvas.width = 640;
+        canvas.height = 480;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.fillStyle = '#171523';
+          ctx.fillRect(0, 0, 640, 480);
+          ctx.fillStyle = '#7057E8';
+          ctx.font = 'bold 24px sans-serif';
+          ctx.textAlign = 'center';
+          ctx.fillText('Duora Video Call', 320, 240);
+        }
+        const canvasStream = canvas.captureStream(10);
+        canvasStream.getVideoTracks().forEach(t => syntheticStream.addTrack(t));
+      } catch (vErr) {
+        console.warn('Virtual video generation note:', vErr);
+      }
+    }
+
+    const notice = isIframe
+      ? 'Microphone hardware restricted by embedded preview frame. Tap "Retry Mic" or open fullscreen.'
+      : 'Microphone permission was not detected. Tap "Retry Mic" to request permission.';
+
+    return { stream: syntheticStream, isVirtual: true, errorNotice: notice };
+  };
+
+  // Re-request and hot-swap microphone track on active call
+  const retryMicrophoneAccess = async (): Promise<boolean> => {
+    try {
+      if (!navigator.mediaDevices?.getUserMedia) return false;
+      const s = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const newAudioTrack = s.getAudioTracks()[0];
+      if (!newAudioTrack) return false;
+
+      // Replace audio track on WebRTC peer connection
+      if (peerConnection.current) {
+        const senders = peerConnection.current.getSenders();
+        const audioSender = senders.find(sender => sender.track?.kind === 'audio');
+        if (audioSender) {
+          await audioSender.replaceTrack(newAudioTrack);
+        } else {
+          peerConnection.current.addTrack(newAudioTrack, s);
+        }
+      }
+
+      // Update localStream
+      if (localStream) {
+        localStream.getAudioTracks().forEach(t => t.stop());
+        const updated = new MediaStream();
+        updated.addTrack(newAudioTrack);
+        localStream.getVideoTracks().forEach(t => updated.addTrack(t));
+        setLocalStream(updated);
+      } else {
+        setLocalStream(s);
+      }
+
+      setIsVirtualMedia(false);
+      setCallError(null);
+      return true;
+    } catch (err: any) {
+      console.warn('Retry microphone access failed:', err);
+      setCallError('Microphone access: ' + (err?.message || 'Permission denied. Please allow microphone in browser settings.'));
+      return false;
+    }
   };
 
   // Caller initiates call
@@ -218,29 +363,19 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
     cleanUpMedia();
     setCallError(null);
 
-    // Verify mediaDevices support
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      setCallError('Audio and video calls require media device access, which is not supported in this browser.');
+    // Prevent calling if either user is blocked
+    if (profile.blockedUserIds?.includes(targetUser.uid) || targetUser.blockedUserIds?.includes(profile.uid)) {
+      setCallError('Cannot call this user due to block settings.');
       return;
     }
 
     try {
-      let stream: MediaStream;
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          audio: true,
-          video: type === 'video' ? { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } } : false
-        });
-      } catch (vidErr) {
-        console.warn('Video acquisition fallback to audio:', vidErr);
-        try {
-          stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-        } catch (audioErr: any) {
-          setCallError('Microphone permission was denied or device not found. Please allow microphone access to make calls.');
-          return;
-        }
+      const mediaResult = await acquireCallMediaStream(type, facingMode);
+      setIsVirtualMedia(mediaResult.isVirtual);
+      if (mediaResult.errorNotice) {
+        setCallError(mediaResult.errorNotice);
       }
-
+      const stream = mediaResult.stream;
       setLocalStream(stream);
 
       const pc = new RTCPeerConnection(ICE_SERVERS);
@@ -254,18 +389,24 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
         pc.addTrack(track, stream);
       });
 
-      // Handle remote tracks
+      // Handle remote tracks and re-create MediaStream to trigger React element bindings
       pc.ontrack = (event) => {
         if (event.streams && event.streams[0]) {
           event.streams[0].getTracks().forEach(track => {
-            remote.addTrack(track);
+            if (!remote.getTracks().some(t => t.id === track.id)) {
+              remote.addTrack(track);
+            }
           });
+          setRemoteStream(new MediaStream(remote.getTracks()));
         } else if (event.track) {
-          remote.addTrack(event.track);
+          if (!remote.getTracks().some(t => t.id === event.track.id)) {
+            remote.addTrack(event.track);
+          }
+          setRemoteStream(new MediaStream(remote.getTracks()));
         }
       };
 
-      // Track connection state: NEVER show successful call until actually established!
+      // Track connection state
       pc.onconnectionstatechange = () => {
         if (pc.connectionState === 'connected') {
           setIsCallEstablished(true);
@@ -400,22 +541,12 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setCallError(null);
 
     try {
-      let stream: MediaStream;
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          audio: true,
-          video: callToAccept.type === 'video' ? { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } } : false
-        });
-      } catch (vidErr) {
-        console.warn('Video stream fallback to audio on accept:', vidErr);
-        try {
-          stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-        } catch (audioErr: any) {
-          setCallError('Microphone permission was denied. Please allow microphone access.');
-          return;
-        }
+      const mediaResult = await acquireCallMediaStream(callToAccept.type, facingMode);
+      setIsVirtualMedia(mediaResult.isVirtual);
+      if (mediaResult.errorNotice) {
+        setCallError(mediaResult.errorNotice);
       }
-
+      const stream = mediaResult.stream;
       setLocalStream(stream);
 
       const pc = new RTCPeerConnection(ICE_SERVERS);
@@ -428,13 +559,20 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
         pc.addTrack(track, stream);
       });
 
+      // Handle remote tracks and re-create MediaStream to trigger React element bindings
       pc.ontrack = (event) => {
         if (event.streams && event.streams[0]) {
           event.streams[0].getTracks().forEach(track => {
-            remote.addTrack(track);
+            if (!remote.getTracks().some(t => t.id === track.id)) {
+              remote.addTrack(track);
+            }
           });
+          setRemoteStream(new MediaStream(remote.getTracks()));
         } else if (event.track) {
-          remote.addTrack(event.track);
+          if (!remote.getTracks().some(t => t.id === event.track.id)) {
+            remote.addTrack(event.track);
+          }
+          setRemoteStream(new MediaStream(remote.getTracks()));
         }
       };
 
@@ -532,7 +670,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
   // Receiver rejects call
   const rejectCall = async () => {
     sound.stopIncomingRingtone();
-    if (incomingCall) {
+    if (incomingCall && profile) {
       const callRef = doc(db, 'calls', incomingCall.id);
       try {
         await updateDoc(callRef, {
@@ -540,6 +678,21 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
           endedAt: serverTimestamp()
         });
       } catch {}
+
+      const callerUser: UserProfile = {
+        uid: incomingCall.callerId,
+        displayName: incomingCall.callerName,
+        avatarUrl: incomingCall.callerAvatar,
+        duoraId: incomingCall.callerDuoraId,
+        username: incomingCall.callerName.toLowerCase().replace(/\s+/g, '_'),
+        usernameLower: incomingCall.callerName.toLowerCase().replace(/\s+/g, '_'),
+        isDiscoverable: true,
+        showOnlineStatus: true,
+        showLastSeen: true,
+        readReceipts: true,
+      };
+
+      logCallInConversation(callerUser, profile, incomingCall.type, 'rejected', 0).catch(() => {});
       setIncomingCall(null);
     }
   };
@@ -547,7 +700,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
   // End active call
   const endCall = async () => {
     sound.playCallEnded();
-    if (callDocRef.current) {
+    if (callDocRef.current && activeCall && profile) {
       try {
         await updateDoc(callDocRef.current, {
           status: 'ended',
@@ -557,6 +710,24 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
       } catch {
         // Non-fatal
       }
+
+      const isCaller = activeCall.callerId === profile.uid;
+      const otherUser: UserProfile = {
+        uid: isCaller ? activeCall.receiverId : activeCall.callerId,
+        displayName: isCaller ? activeCall.receiverName : activeCall.callerName,
+        avatarUrl: isCaller ? activeCall.receiverAvatar : activeCall.callerAvatar,
+        duoraId: isCaller ? activeCall.receiverDuoraId : activeCall.callerDuoraId,
+        username: (isCaller ? activeCall.receiverName : activeCall.callerName).toLowerCase().replace(/\s+/g, '_'),
+        usernameLower: (isCaller ? activeCall.receiverName : activeCall.callerName).toLowerCase().replace(/\s+/g, '_'),
+        isDiscoverable: true,
+        showOnlineStatus: true,
+        showLastSeen: true,
+        readReceipts: true,
+      };
+
+      const callerProfile = isCaller ? profile : otherUser;
+      const receiverProfile = isCaller ? otherUser : profile;
+      logCallInConversation(callerProfile, receiverProfile, activeCall.type, 'ended', callDuration).catch(() => {});
     }
     cleanUpMedia();
   };
@@ -624,6 +795,7 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
         callHistory,
         callError,
         clearCallError,
+        isVirtualMedia,
         initiateCall,
         acceptCall,
         rejectCall,
@@ -631,7 +803,8 @@ export const CallProvider: React.FC<{ children: React.ReactNode }> = ({ children
         toggleAudio,
         toggleVideo,
         toggleSpeaker,
-        switchCamera
+        switchCamera,
+        retryMicrophoneAccess
       }}
     >
       {children}

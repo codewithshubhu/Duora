@@ -115,13 +115,11 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
       const newAvatarUrl = await uploadProfilePhoto(profile.uid, file);
       setAvatarUrl(newAvatarUrl);
       
-      // If not currently in explicit edit mode, save directly to profile immediately
-      if (!isEditing) {
-        await updateUserProfile(profile.uid, { avatarUrl: newAvatarUrl });
-        await refreshProfile();
-        setSuccess('Profile picture updated and synchronized across all chats!');
-        setTimeout(() => setSuccess(null), 3000);
-      }
+      // Immediately persist to Firestore so it is never lost and visible to all other users
+      await updateUserProfile(profile.uid, { avatarUrl: newAvatarUrl });
+      await refreshProfile();
+      setSuccess('Profile photo updated successfully!');
+      setTimeout(() => setSuccess(null), 3000);
     } catch (err: any) {
       console.error('Photo upload error:', err);
       setError(err?.message || 'Could not upload photo.');
@@ -275,8 +273,8 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                 )}
               </div>
 
-              {/* Upload photo button badge for self */}
-              {isSelf && (
+              {/* Upload photo button badge for self - ONLY when editing */}
+              {isSelf && isEditing && (
                 <button
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
@@ -329,8 +327,8 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
               </div>
             )}
 
-            {/* Upload from phone button for self */}
-            {isSelf && (
+            {/* Upload from phone button for self - ONLY when Edit Profile is open */}
+            {isSelf && isEditing && (
               <div className="flex items-center gap-2 mt-4">
                 <button
                   type="button"

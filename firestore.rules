@@ -58,27 +58,25 @@ service cloud.firestore {
 
     // Conversations
     match /conversations/{convId} {
-      allow get: if isSignedIn() && (resource == null || request.auth.uid in resource.data.participantIds);
-      allow list: if isSignedIn() && (request.auth.uid in resource.data.participantIds);
+      allow get: if isSignedIn() && (
+        resource == null || 
+        request.auth.uid in resource.data.participantIds || 
+        resource.data.type == 'group'
+      );
+      allow list: if isSignedIn();
       allow create: if isSignedIn() && (request.auth.uid in incoming().participantIds);
-      allow update: if isSignedIn() && (request.auth.uid in resource.data.participantIds);
-      allow delete: if false;
+      allow update: if isSignedIn() && (
+        request.auth.uid in resource.data.participantIds ||
+        (resource.data.type == 'group' && request.auth.uid in incoming().participantIds)
+      );
+      allow delete: if isSignedIn() && (request.auth.uid in resource.data.participantIds);
 
       // Subcollection: Messages
       match /messages/{messageId} {
-        allow get, list: if isSignedIn() && (
-          !exists(/databases/$(database)/documents/conversations/$(convId)) ||
-          request.auth.uid in get(/databases/$(database)/documents/conversations/$(convId)).data.participantIds
-        );
-        allow create: if isSignedIn() && incoming().senderId == request.auth.uid && (
-          !exists(/databases/$(database)/documents/conversations/$(convId)) ||
-          request.auth.uid in get(/databases/$(database)/documents/conversations/$(convId)).data.participantIds
-        );
-        allow update: if isSignedIn() && (
-          !exists(/databases/$(database)/documents/conversations/$(convId)) ||
-          request.auth.uid in get(/databases/$(database)/documents/conversations/$(convId)).data.participantIds
-        );
-        allow delete: if isSignedIn() && (existing().senderId == request.auth.uid);
+        allow get, list: if isSignedIn();
+        allow create: if isSignedIn() && incoming().senderId == request.auth.uid;
+        allow update: if isSignedIn();
+        allow delete: if isSignedIn();
       }
 
       // Subcollection: Typing
